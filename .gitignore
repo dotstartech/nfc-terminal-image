@@ -1,0 +1,10 @@
+# Buildroot directory (use submodule or clone separately)
+buildroot/
+
+# Build outputs
+output/
+
+# Temporary files
+*.swp
+*.tmp
+*~

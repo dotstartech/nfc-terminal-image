@@ -1,0 +1,46 @@
+# NFC Terminal - Minimal Boot Configuration (no display overlays)
+# Use this to test basic boot before enabling display
+
+# Firmware files for Pi 4/CM4
+start_file=start4.elf
+fixup_file=fixup4.dat
+
+# 64-bit kernel
+arm_64bit=1
+kernel=Image
+
+# Disable overscan
+disable_overscan=1
+
+# GPU memory allocation (1GB total)
+gpu_mem=128
+
+# Disable unused features (no WiFi on this CM4 variant)
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
+
+# Enable serial console (debug) - CRITICAL for debugging
+enable_uart=1
+dtoverlay=miniuart-bt
+
+# Enable I2C interfaces
+dtparam=i2c_arm=on
+dtparam=i2c_vc=on
+
+# Enable SPI (optional)
+dtparam=spi=on
+
+# Enable dwc2 USB controller
+dtoverlay=dwc2,dr_mode=host
+
+# Disable audio
+dtparam=audio=off
+
+# =========================================
+# DISPLAY OVERLAYS DISABLED FOR TESTING
+# =========================================
+# Uncomment these one at a time to test:
+#display_auto_detect=0
+#dtoverlay=vc4-kms-v3d
+#dtoverlay=st7703-gx040hd
+#dtoverlay=ft6336u-gx040hd

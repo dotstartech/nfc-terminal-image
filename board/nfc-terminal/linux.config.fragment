@@ -1,0 +1,87 @@
+# NFC Terminal Kernel Configuration Fragment
+# Enable display and I2C features for CM4
+
+# DRM/KMS Display Support
+CONFIG_DRM=y
+CONFIG_DRM_MIPI_DSI=y
+CONFIG_DRM_KMS_HELPER=y
+CONFIG_DRM_PANEL=y
+# Disable mainline ST7703 - we use the custom gx040hd driver as out-of-tree module
+# CONFIG_DRM_PANEL_SITRONIX_ST7703 is not set
+CONFIG_DRM_VC4=y
+CONFIG_DRM_VC4_HDMI_CEC=y
+
+# Backlight support for display
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_BACKLIGHT_PWM=y
+CONFIG_BACKLIGHT_GPIO=y
+
+# Regulator support (needed by panel driver)
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+
+# I2C Support
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_I2C_BCM2835=y
+CONFIG_I2C_BRCMSTB=y
+
+# Touchscreen Support (edt-ft5x06 supports FT6336U)
+CONFIG_INPUT_TOUCHSCREEN=y
+CONFIG_TOUCHSCREEN_EDT_FT5X06=m
+
+# GPIO
+CONFIG_GPIO_SYSFS=y
+CONFIG_GPIOLIB=y
+
+# Framebuffer Console
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_LOGO=y
+CONFIG_LOGO_LINUX_CLUT224=y
+
+# Disable WiFi and Bluetooth (not present on this CM4 variant)
+# CONFIG_WLAN is not set
+# CONFIG_BT is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+
+# VirtIO drivers for QEMU testing
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# PCI host controller for QEMU virt machine
+CONFIG_PCI_HOST_GENERIC=y
+
+# Required for proper boot debugging
+CONFIG_EARLY_PRINTK=y
+CONFIG_DEBUG_LL=y
+CONFIG_DEBUG_LL_UART_PL011=y
+
+# USB Host Controller Support
+CONFIG_USB=y
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_XHCI_PLATFORM=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC2_HOST=y
+CONFIG_USB_DWC2_PCI=y
+
+# USB Hub Support (for carrier boards with USB hubs)
+CONFIG_USB_HID=y
+CONFIG_USB_STORAGE=y
+
+# USB Ethernet Support for LAN9500A (dotstartech PoE backplate)
+CONFIG_USB_NET_DRIVERS=y
+CONFIG_USB_USBNET=y
+CONFIG_USB_NET_SMSC95XX=y
+CONFIG_USB_NET_AX88179_178A=y
+CONFIG_USB_NET_CDCETHER=y
+CONFIG_USB_NET_SMSC75XX=y
+
+# MII/PHY support (sometimes needed for USB Ethernet)
+CONFIG_MII=y

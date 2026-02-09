@@ -1,0 +1,22 @@
+# Debug boot config for CM4
+# Start with minimal config to debug boot issues
+
+# GPU firmware files
+start_file=start4.elf
+fixup_file=fixup4.dat
+
+# 64-bit ARM kernel
+arm_64bit=1
+
+# Kernel and device tree
+kernel=Image
+device_tree=bcm2711-rpi-cm4.dtb
+
+# Enable UART for serial console
+enable_uart=1
+
+# Disable overscan for displays
+disable_overscan=1
+
+# CM4 specific - otg_mode for USB on IO board
+otg_mode=1

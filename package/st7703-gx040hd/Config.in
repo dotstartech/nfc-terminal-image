@@ -1,0 +1,15 @@
+config BR2_PACKAGE_ST7703_GX040HD
+	bool "st7703-gx040hd"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Linux kernel module and device tree overlays for the
+	  GX040HD-30MB-A1 4.0" 720x720 IPS LCD panel with
+	  Sitronix ST7703 display controller and FocalTech FT6336U
+	  touch controller.
+
+	  Designed for Raspberry Pi Compute Module 4.
+
+	  https://github.com/dotstartech/st7703-gx040hd-driver
+
+comment "st7703-gx040hd needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

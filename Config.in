@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_NFC_TERMINAL_PATH/package/st7703-gx040hd/Config.in"

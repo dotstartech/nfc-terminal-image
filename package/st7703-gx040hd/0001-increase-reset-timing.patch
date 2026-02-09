@@ -1,0 +1,41 @@
+From: NFC Terminal Build System <build@nfc-terminal.local>
+Date: Sun, 9 Feb 2026 12:00:00 +0100
+Subject: [PATCH] panel-sitronix-st7703: Increase reset timing for hard reboot robustness
+
+After a hard reboot (power button without proper shutdown), the ST7703
+panel controller may be in an undefined state. The DSI PHY may not be
+properly initialized, causing DSI transfer timeouts during panel
+initialization.
+
+This patch increases the reset timing to ensure the panel is properly
+reset even when coming from a corrupted state:
+
+- Reset pulse: 20-40us -> 50ms (ST7703 datasheet recommends >=1ms)
+- Post-reset delay: 20ms -> 250ms (allows full panel and DSI PHY init)
+
+Signed-off-by: NFC Terminal Build System <build@nfc-terminal.local>
+---
+ panel-sitronix-st7703-gx040hd.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+--- a/panel-sitronix-st7703-gx040hd.c
++++ b/panel-sitronix-st7703-gx040hd.c
+@@ -425,10 +425,16 @@ static int st7703_prepare(struct drm_pan
+ 		goto disable_vcc;
+ 	}
+ 
++	/*
++	 * Extended reset timing for robustness after hard reboot.
++	 * The ST7703 datasheet recommends >=1ms reset pulse and 120ms
++	 * delay before sending commands. We use longer delays to ensure
++	 * DSI PHY is fully stable before panel initialization.
++	 */
+ 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+-	usleep_range(20, 40);
++	msleep(50);  /* 50ms reset pulse (was 20-40us) */
+ 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+-	msleep(20);
++	msleep(250); /* 250ms post-reset delay (was 20ms) */
+ 
+ 	ctx->desc->init_sequence(&dsi_ctx);
+ 	if (dsi_ctx.accum_err)

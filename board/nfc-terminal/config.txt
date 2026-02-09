@@ -1,0 +1,45 @@
+# NFC Terminal - Raspberry Pi CM4 Configuration
+# Debug version - minimal config to boot successfully
+
+# Firmware files for Pi 4/CM4
+start_file=start4.elf
+fixup_file=fixup4.dat
+
+# 64-bit kernel with explicit device tree
+arm_64bit=1
+kernel=Image
+device_tree=bcm2711-rpi-cm4.dtb
+
+# GPU memory allocation
+gpu_mem=256
+
+# Enable serial console for debugging
+enable_uart=1
+
+# Enable I2C interfaces
+# i2c_vc = I2C0 (for DSI display/touch)
+dtparam=i2c_vc=on
+# i2c_arm = I2C1 (for RTC and other peripherals)
+dtparam=i2c_arm=on
+
+# DS3231 RTC on I2C1
+dtoverlay=i2c-rtc,ds3231
+
+dtparam=audio=off
+
+# USB mode for CM4 on IO board
+otg_mode=1
+
+# Enable USB host mode explicitly (needed for USB Ethernet on some carriers)
+dtoverlay=dwc2,dr_mode=host
+
+# Disable Bluetooth
+dtoverlay=disable-bt
+
+# ST7703 GX040HD Display Panel (720x720 MIPI DSI)
+display_auto_detect=0
+dtoverlay=vc4-kms-v3d
+dtoverlay=st7703-gx040hd
+
+# FT6336U Touch Controller on I2C0
+dtoverlay=ft6336u-gx040hd
