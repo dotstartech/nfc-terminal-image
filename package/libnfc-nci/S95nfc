@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Start NFC demo app in poll mode
+# GPIO control is handled by pn5xx-i2c kernel driver
+#
+
+DAEMON="nfcDemoApp"
+PIDFILE="/var/run/$DAEMON.pid"
+LOGFILE="/var/log/nfc.log"
+NFC_DEV="/dev/pn544"
+
+wait_for_device() {
+	# Wait for the kernel driver to create the device node
+	printf "Waiting for NFC device..."
+	for i in $(seq 1 30); do
+		if [ -c "$NFC_DEV" ]; then
+			echo " found"
+			return 0
+		fi
+		sleep 0.5
+	done
+	echo " not found!"
+	return 1
+}
+
+start() {
+	printf "Starting NFC polling: "
+	# Wait for kernel module to initialize and create device
+	if ! wait_for_device; then
+		echo "FAIL - $NFC_DEV not available"
+		return 1
+	fi
+	# Ensure proper permissions
+	chmod 666 "$NFC_DEV" 2>/dev/null || true
+	start-stop-daemon -S -b -m -p "$PIDFILE" -x /usr/bin/$DAEMON -- poll > "$LOGFILE" 2>&1
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+}
+
+stop() {
+	printf "Stopping NFC polling: "
+	start-stop-daemon -K -q -p "$PIDFILE"
+	[ $? = 0 ] && echo "OK" || echo "FAIL"
+	rm -f "$PIDFILE"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	restart|reload)
+		restart
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+esac
+
+exit $?

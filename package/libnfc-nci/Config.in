@@ -1,0 +1,25 @@
+config BR2_PACKAGE_LIBNFC_NCI
+	bool "libnfc-nci"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_OPENSSL
+	help
+	  Linux NFC stack for NCI based NXP NFC Controllers (PN7150, PN7120).
+
+	  https://github.com/dotstartech/linux_libnfc-nci
+
+if BR2_PACKAGE_LIBNFC_NCI
+
+config BR2_PACKAGE_LIBNFC_NCI_DEMOAPP
+	bool "install demoApp"
+	default y
+	help
+	  Install the NFC demo application for testing NFC functionality.
+
+config BR2_PACKAGE_LIBNFC_NCI_DEMOAPP_AUTOSTART
+	bool "auto-start demoApp in poll mode"
+	default y
+	depends on BR2_PACKAGE_LIBNFC_NCI_DEMOAPP
+	help
+	  Automatically start demoApp in poll mode at boot to read NFC cards.
+
+endif

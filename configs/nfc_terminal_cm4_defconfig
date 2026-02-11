@@ -49,6 +49,14 @@ BR2_PACKAGE_HOST_KMOD=y
 # ST7703 Display Driver Package
 BR2_PACKAGE_ST7703_GX040HD=y
 
+# PN5xx NFC I2C kernel driver (for PN7150)
+BR2_PACKAGE_PN5XX_I2C=y
+
+# NFC libnfc-nci stack and demo app
+BR2_PACKAGE_LIBNFC_NCI=y
+BR2_PACKAGE_LIBNFC_NCI_DEMOAPP=y
+BR2_PACKAGE_LIBNFC_NCI_DEMOAPP_AUTOSTART=y
+
 # I2C Tools (for debugging and device access)
 BR2_PACKAGE_I2C_TOOLS=y
 
@@ -85,3 +93,7 @@ BR2_TARGET_ROOTFS_EXT2_SIZE="512M"
 # Post-build and Post-image Scripts
 BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_NFC_TERMINAL_PATH)/board/nfc-terminal/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_NFC_TERMINAL_PATH)/board/nfc-terminal/post-image.sh"
+
+# GPIO tools for NFC debugging and control
+BR2_PACKAGE_LIBGPIOD=y
+BR2_PACKAGE_LIBGPIOD_TOOLS=y
