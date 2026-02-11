@@ -99,7 +99,7 @@ sudo ./buildroot/output/host/bin/rpiboot
 sudo dd if=buildroot/output/images/nfc-terminal.img of=/dev/sdX bs=4M status=progress
 sync
 ```
-Alternatively Raspberry Pi Imager can be used to flush the image.
+Alternatively Raspberry Pi Imager can be used to flash the image.
 
 4. Disconnect IO board USB from host
 5. Switch boot jumper back to eMMC boot
