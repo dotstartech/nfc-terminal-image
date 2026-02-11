@@ -51,10 +51,6 @@
 #define DRIVER_CARD "PN54x NFC"
 #define DRIVER_DESC "NFC driver for PN54x Family"
 
-#ifndef CONFIG_OF
-#define CONFIG_OF
-#endif
-
 struct pn54x_dev	{
 	wait_queue_head_t read_wq;
 	struct mutex read_mutex;
@@ -159,7 +155,7 @@ static int pn544_enable(struct pn54x_dev *dev, int mode)
 		}
 		else {
 			pr_err("%s Unused Firm GPIO %d\n", __func__, mode);
-			return GPIO_UNUSED;
+			return -ENODEV;
 		}
 		msleep(20);
 		gpio_set_value(dev->ven_gpio, 0);
@@ -249,7 +245,7 @@ static ssize_t pn54x_dev_read(struct file *filp, char __user *buf,
 
 	/* pn54x seems to be slow in handling I2C read requests
 	 * so add 1ms delay after recv operation */
-	udelay(1000);
+	usleep_range(1000, 2000);
 
 	if (ret < 0) {
 		pr_err("%s: i2c_master_recv returned %d\n", __func__, ret);
@@ -293,12 +289,14 @@ static ssize_t pn54x_dev_write(struct file *filp, const char __user *buf,
 	ret = i2c_master_send(pn54x_dev->client, tmp, count);
 	if (ret != count) {
 		pr_err("%s : i2c_master_send returned %d\n", __func__, ret);
-		ret = -EIO;
+		/* Translate only short writes to -EIO; preserve negative errno */
+		if (ret >= 0 && ret < count)
+			ret = -EIO;
 	}
 
 	/* pn54x seems to be slow in handling I2C write requests
-	 * so add 1ms delay after I2C send oparation */
-	udelay(1000);
+	 * so add 1ms delay after I2C send operation */
+	usleep_range(1000, 2000);
 
 	return ret;
 }
@@ -702,10 +700,14 @@ static void pn54x_remove(struct i2c_client *client)
 		gpio_free(pn54x_dev->firm_gpio);
 	if (gpio_is_valid(pn54x_dev->clkreq_gpio))
 		gpio_free(pn54x_dev->clkreq_gpio);
-	regulator_put(pn54x_dev->pvdd_reg);
-	regulator_put(pn54x_dev->vbat_reg);
-	regulator_put(pn54x_dev->pmuvcc_reg);
-	regulator_put(pn54x_dev->sevdd_reg);
+	if (pn54x_dev->pvdd_reg)
+		regulator_put(pn54x_dev->pvdd_reg);
+	if (pn54x_dev->vbat_reg)
+		regulator_put(pn54x_dev->vbat_reg);
+	if (pn54x_dev->pmuvcc_reg)
+		regulator_put(pn54x_dev->pmuvcc_reg);
+	if (pn54x_dev->sevdd_reg)
+		regulator_put(pn54x_dev->sevdd_reg);
 
 	kfree(pn54x_dev);
 }
