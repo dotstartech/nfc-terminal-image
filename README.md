@@ -4,11 +4,8 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 
 ## Target Hardware
 
-- **Board**: Raspberry Pi Compute Module 4
+- **Board**: Raspberry Pi Compute Module 4 (**RAM**: 1GB, **Storage**: 8GB eMMC, **WiFi/BT**: None)
 - **Carrier**: [dotstartech/wall-panel](https://github.com/dotstartech/wall-panel)
-- **RAM**: 1GB
-- **Storage**: 8GB eMMC
-- **WiFi/BT**: None
 - **Display**: GX040HD-30MB-A1 (720x720 IPS LCD with ST7703 controller)
 - **Touch**: FocalTech FT6336U (I2C0 @ 0x48)
 - **NFC**: NXP PN7150 (I2C1 @ 0x28)
@@ -27,27 +24,25 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 
 ```
 nfc-terminal-image/
-├── buildroot/              # Buildroot source (cloned)
-├── board/nfc-terminal/     # Board-specific files
-│   ├── config.txt          # Boot configuration
-│   ├── cmdline.txt         # Kernel command line
-│   ├── genimage.cfg        # Image generation config
+├── buildroot/                 # Buildroot source (cloned)
+├── board/nfc-terminal/        # Board-specific files
+│   ├── config.txt             # Boot configuration
+│   ├── cmdline.txt            # Kernel command line
+│   ├── genimage.cfg           # Image generation config
 │   ├── linux.config.fragment  # Kernel config additions
-│   ├── post-build.sh       # Post-build customization
-│   └── post-image.sh       # Image generation script
-├── configs/                # Buildroot defconfigs
+│   ├── post-build.sh          # Post-build customization
+│   └── post-image.sh          # Image generation script
+├── configs/                   # Buildroot defconfigs
 │   └── nfc_terminal_cm4_defconfig
-├── package/                # Custom packages
-│   └── st7703-gx040hd/     # Display driver package
-├── external.desc           # External tree descriptor
-├── external.mk             # External tree makefile
-├── Config.in               # External tree Kconfig
-└── README.md               # This file
+├── package/                   # Custom packages
+│   └── st7703-gx040hd/        # Display driver package
+├── external.desc              # External tree descriptor
+├── external.mk                # External tree makefile
+├── Config.in                  # External tree Kconfig
+└── README.md                  # This file
 ```
 
-## Building
-
-### Prerequisites
+## Building Image
 
 Install build dependencies (Debian/Ubuntu):
 
@@ -56,8 +51,6 @@ sudo apt-get update
 sudo apt-get install -y build-essential git wget cpio unzip rsync bc \
     libncurses-dev libssl-dev python3 python3-dev python3-setuptools file
 ```
-
-### Build Steps
 
 1. **Clone Buildroot**:
 
@@ -106,8 +99,6 @@ Alternatively Raspberry Pi Imager can be used to flush the image.
 6. Connect LAN cable to PoE switch
 
 ## Configuration
-
-### config.txt Parameters
 
 Key display, I2C, and peripheral settings in `/boot/config.txt`:
 
