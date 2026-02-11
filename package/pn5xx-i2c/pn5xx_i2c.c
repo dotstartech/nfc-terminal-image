@@ -334,7 +334,7 @@ static long  pn54x_dev_ioctl(struct file *filp, unsigned int cmd,
 {
 	struct pn54x_dev *pn54x_dev = filp->private_data;
 
-	pr_info("%s, cmd=%d, arg=%lu\n", __func__, cmd, arg);
+	pr_debug("%s, cmd=%u, arg=%lu\n", __func__, cmd, arg);
 	switch (cmd) {
 	case PN544_SET_PWR:
 		if (arg == 2) {

@@ -17,9 +17,10 @@ config BR2_PACKAGE_LIBNFC_NCI_DEMOAPP
 
 config BR2_PACKAGE_LIBNFC_NCI_DEMOAPP_AUTOSTART
 	bool "auto-start demoApp in poll mode"
-	default y
+	default n
 	depends on BR2_PACKAGE_LIBNFC_NCI_DEMOAPP
 	help
 	  Automatically start demoApp in poll mode at boot to read NFC cards.
+	  Note: Not needed if using nfc-console on tty1 for display output.
 
 endif

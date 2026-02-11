@@ -17,6 +17,13 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifndef _PN5XX_I2C_H_
+#define _PN5XX_I2C_H_
+
+#include <linux/ioctl.h>
+
+struct regulator;
+
 #define PN544_MAGIC	0xE9
 
 /*
@@ -48,3 +55,5 @@ struct pn544_i2c_platform_data {
 	struct regulator *pmuvcc_reg;
 	struct regulator *sevdd_reg;
 };
+
+#endif /* _PN5XX_I2C_H_ */

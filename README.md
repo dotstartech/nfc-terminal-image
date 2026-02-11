@@ -105,6 +105,51 @@ Alternatively Raspberry Pi Imager can be used to flash the image.
 5. Switch boot jumper back to eMMC boot
 6. Connect LAN cable to PoE switch
 
+## Testing with QEMU
+
+The image can be tested in QEMU without real hardware for basic validation of boot and rootfs.
+
+### Prerequisites
+
+Install QEMU for ARM64:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install qemu-system-arm
+
+# Fedora
+sudo dnf install qemu-system-aarch64
+```
+
+### Running
+
+```bash
+./qemu-run.sh
+```
+
+Press `Ctrl-A X` to exit QEMU.
+
+### How It Works
+
+QEMU doesn't have Raspberry Pi 4/CM4 machine emulation, so the script uses the generic ARM64 `virt` machine with a Cortex-A72 CPU. It performs direct kernel boot with the rootfs mounted as a virtio block device.
+
+**What works in QEMU:**
+- Kernel boot and init system
+- Network via user-mode networking (SSH available on `localhost:2222`)
+- Basic userspace and shell access
+
+**What doesn't work (requires real hardware):**
+- NFC (`/dev/pn544` won't exist - nfc-console will timeout after 30s)
+- Display (ST7703) and touch
+- I2C, GPIO, and other Pi-specific peripherals
+
+SSH into the QEMU instance:
+
+```bash
+ssh -p 2222 root@localhost
+# Password: nfc-terminal
+```
+
 ## Configuration
 
 Key display, I2C, and peripheral settings in `/boot/config.txt`:
