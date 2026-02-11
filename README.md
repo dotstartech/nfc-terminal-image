@@ -1,6 +1,6 @@
 # NFC Terminal Image - Raspberry Pi CM4
 
-Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4.
+Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carrier board [dotstartech/wall-panel](https://github.com/dotstartech/wall-panel) and [4 inch MIPI DSI LCD panel with ST7703 controller](https://github.com/dotstartech/st7703-gx040hd-driver)
 
 ## Target Hardware
 
@@ -22,7 +22,6 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4.
 - DS3231 RTC support
 - I2C interface enabled (I2C0 and I2C1)
 - USB Ethernet (smsc95xx for PoE backplate)
-- Minimal footprint for embedded applications
 
 ## Directory Structure
 
@@ -54,20 +53,8 @@ Install build dependencies (Debian/Ubuntu):
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    git \
-    wget \
-    cpio \
-    unzip \
-    rsync \
-    bc \
-    libncurses-dev \
-    libssl-dev \
-    python3 \
-    python3-dev \
-    python3-setuptools \
-    file
+sudo apt-get install -y build-essential git wget cpio unzip rsync bc \
+    libncurses-dev libssl-dev python3 python3-dev python3-setuptools file
 ```
 
 ### Build Steps
@@ -100,31 +87,23 @@ This configures Buildroot with the external tree and builds everything.
    - `rootfs.ext4` - Root filesystem
    - `bcm2711-rpi-cm4.dtb` - Device tree
 
-## Flashing
-
-### For CM4 with eMMC (no SD card slot)
+## Flashing Image
 
 1. Install boot jumpers on IO board to disable eMMC boot
 2. Connect IO board USB to host
 3. Flash using rpiboot:
 ```bash
-buildroot/output/host/bin/rpiboot
+sudo ./buildroot/output/host/bin/rpiboot
 
 # Wait for eMMC to appear as mass storage, then:
 sudo dd if=buildroot/output/images/nfc-terminal.img of=/dev/sdX bs=4M status=progress
 sync
 ```
+Alternatively Raspberry Pi Imager can be used to flush the image.
 
 4. Disconnect IO board USB from host
 5. Switch boot jumper back to eMMC boot
 6. Connect LAN cable to PoE switch
-
-### For development with SD card
-
-```bash
-sudo dd if=buildroot/output/images/nfc-terminal.img of=/dev/sdX bs=4M status=progress
-sync
-```
 
 ## Configuration
 
@@ -211,6 +190,7 @@ i2cdetect -y 1
 ## References
 
 - [Buildroot Manual](https://buildroot.org/downloads/manual/manual.html)
+- [Carrier Board](https://github.com/dotstartech/wall-panel)
 - [ST7703 Display Driver](https://github.com/dotstartech/st7703-gx040hd-driver)
 - [Raspberry Pi Device Trees](https://www.raspberrypi.com/documentation/computers/configuration.html#device-trees-overlays-and-parameters)
 - [CM4 Datasheet](https://datasheets.raspberrypi.com/cm4/cm4-datasheet.pdf)
