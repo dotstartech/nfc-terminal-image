@@ -6,13 +6,17 @@ set -e
 
 BOARD_DIR="$(dirname $0)"
 
-# Disable tty1 console on display - we use splash screen instead
-# Console access is available via serial port (ttyAMA0)
+# Configure tty1 to run nfcDemoApp instead of getty
+# This displays NFC polling output on the screen
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
-    # Remove any existing tty1 entry to prevent it from overwriting splash
+    # Remove default tty1 getty entry
     sed -i '/^tty1::/d' ${TARGET_DIR}/etc/inittab
-    # Comment out any other tty entries that might use the display
+    # Comment out other tty entries
     sed -i 's/^tty\([2-9]\)::/#tty\1::/' ${TARGET_DIR}/etc/inittab
+    # Add nfcDemoApp on tty1 with respawn
+    echo '' >> ${TARGET_DIR}/etc/inittab
+    echo '# NFC Demo App on display (respawns if exits)' >> ${TARGET_DIR}/etc/inittab
+    echo 'tty1::respawn:/usr/bin/nfc-console' >> ${TARGET_DIR}/etc/inittab
 fi
 
 # Enable I2C devices at boot
@@ -51,6 +55,71 @@ panel-sitronix-st7703-gx040hd
 # EDT FT5x06 touchscreen driver (supports FT6336U)
 edt_ft5x06
 EOF
+
+# Load NFC kernel driver at boot
+cat > ${TARGET_DIR}/etc/modules-load.d/nfc.conf << 'EOF'
+# PN5xx NFC I2C driver (creates /dev/pn544)
+pn5xx_i2c
+EOF
+
+# Create udev rule for NFC device permissions
+cat > ${TARGET_DIR}/etc/udev/rules.d/99-nfc.rules << 'EOF'
+# PN5xx NFC device - allow all users to access
+KERNEL=="pn544", MODE="0666"
+EOF
+
+# Configure libnfc-nci to use the correct device node (/dev/pn544)
+# The pn5xx kernel driver creates /dev/pn544, not /dev/pn54x
+if [ -e ${TARGET_DIR}/etc/libnfc-nxp-init.conf ]; then
+    # Add device node configuration if not present
+    if ! grep -q "NXP_NFC_DEV_NODE" ${TARGET_DIR}/etc/libnfc-nxp-init.conf; then
+        echo "" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
+        echo "###############################################################################" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
+        echo "# NFC Device Node (created by pn5xx_i2c kernel driver)" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
+        echo "NXP_NFC_DEV_NODE=\"/dev/pn544\"" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
+    fi
+fi
+
+# Create NFC console wrapper script for tty1
+# This waits for the device, clears splash, and runs nfcDemoApp
+cat > ${TARGET_DIR}/usr/bin/nfc-console << 'NFCEOF'
+#!/bin/sh
+#
+# NFC Console - runs nfcDemoApp on the display (tty1)
+#
+
+NFC_DEV="/dev/pn544"
+
+# Wait for NFC device to appear (max 30 seconds)
+echo "Waiting for NFC hardware..."
+count=0
+while [ ! -c "$NFC_DEV" ] && [ $count -lt 60 ]; do
+    sleep 0.5
+    count=$((count + 1))
+done
+
+if [ ! -c "$NFC_DEV" ]; then
+    echo "ERROR: NFC device $NFC_DEV not found!"
+    echo "Check: lsmod | grep pn5xx"
+    echo "       dmesg | grep -i nfc"
+    echo ""
+    echo "Press Enter to retry..."
+    read dummy
+    exit 1
+fi
+
+# Clear the screen (removes splash image)
+clear
+
+# Set permissions
+chmod 666 "$NFC_DEV" 2>/dev/null
+
+# Run nfcDemoApp in foreground on this console
+echo "Starting NFC polling..."
+echo ""
+exec /usr/bin/nfcDemoApp poll
+NFCEOF
+chmod 755 ${TARGET_DIR}/usr/bin/nfc-console
 
 # Create early boot script to run depmod and load display modules
 # This runs before S10udev to ensure modules are available
@@ -269,5 +338,13 @@ case "$1" in
 esac
 EOF
 chmod 755 ${TARGET_DIR}/etc/init.d/S99boot-complete
+
+# Install NFC diagnostic script
+if [ -e ${BOARD_DIR}/nfc-diag.sh ]; then
+    install -D -m 0755 ${BOARD_DIR}/nfc-diag.sh ${TARGET_DIR}/usr/bin/nfc-diag
+fi
+
+# Remove S95nfc if present (nfc-console on tty1 handles autostart)
+rm -f ${TARGET_DIR}/etc/init.d/S95nfc*
 
 echo "NFC Terminal post-build completed"

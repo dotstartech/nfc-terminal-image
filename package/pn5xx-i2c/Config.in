@@ -1,0 +1,14 @@
+config BR2_PACKAGE_PN5XX_I2C
+	bool "pn5xx-i2c"
+	depends on BR2_LINUX_KERNEL
+	help
+	  NXP PN54x/PN7150 NFC kernel I2C driver.
+	  Creates /dev/pn544 character device for userspace NFC stack.
+
+	  This driver handles GPIO control for the NFC chip's
+	  enable and interrupt pins via device tree configuration.
+
+	  https://github.com/NXPNFCLinux/nxp-pn5xx
+
+comment "pn5xx-i2c needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

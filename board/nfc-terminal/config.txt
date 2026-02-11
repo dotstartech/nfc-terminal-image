@@ -25,6 +25,10 @@ dtparam=i2c_arm=on
 # DS3231 RTC on I2C1
 dtoverlay=i2c-rtc,ds3231
 
+# PN7150 NFC on I2C1 with kernel driver
+# GPIO5 = NFC INT, GPIO6 = NFC ENABLE
+dtoverlay=nfc-pn7150
+
 dtparam=audio=off
 
 # USB mode for CM4 on IO board

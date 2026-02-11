@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0
+// Device Tree Overlay for NXP PN7150 NFC on I2C1 with pn5xx kernel driver
+// GPIO5 = Interrupt (IRQ)
+// GPIO6 = Enable (VEN)
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2711";
+
+    // Configure GPIO pins for NFC
+    fragment@0 {
+        target = <&gpio>;
+        __overlay__ {
+            nfc_pins: nfc_pins {
+                brcm,pins = <5 6>;
+                brcm,function = <0 1>;  // 0=input (IRQ), 1=output (VEN)
+                brcm,pull = <2 0>;      // 2=pull-up on IRQ, 0=none on VEN
+            };
+        };
+    };
+
+    // Add PN7150 to I2C1
+    fragment@1 {
+        target = <&i2c1>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            pn7150: pn7150@28 {
+                compatible = "nxp,pn547";
+                reg = <0x28>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&nfc_pins>;
+                interrupt-parent = <&gpio>;
+                interrupts = <5 1>;  // GPIO5, rising edge
+                interrupt-gpios = <&gpio 5 0>;  // GPIO5, active high
+                enable-gpios = <&gpio 6 0>;     // GPIO6, active high
+                status = "okay";
+            };
+        };
+    };
+};
+
