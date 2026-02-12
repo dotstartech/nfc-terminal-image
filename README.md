@@ -274,8 +274,8 @@ Edit `board/nfc-terminal/config.txt` for Raspberry Pi boot parameters.
 # Check kernel messages
 dmesg | grep -E "(st7703|dsi|panel|vc4)"
 
-# Verify overlays loaded
-dtoverlay -l
+# Verify overlays in device tree
+ls /proc/device-tree/soc/dsi@*/
 ```
 
 ### Touch not responding
@@ -284,8 +284,11 @@ dtoverlay -l
 # Check I2C devices
 i2cdetect -y 0    # Should show 0x48
 
-# Test touch events
-evtest /dev/input/event0
+# Check touch input device exists
+ls -la /dev/input/event*
+
+# Read raw touch events (hex dump)
+cat /dev/input/event0 | hexdump -C
 ```
 
 ### I2C Issues
@@ -320,8 +323,8 @@ i2cdetect -y 1
 /etc/init.d/S95nfc stop
 nfcDemoApp poll
 
-# Check GPIO assignments
-gpioinfo | grep -E "GPIO5|GPIO6|nfc"
+# Check GPIO status in sysfs
+cat /sys/kernel/debug/gpio | grep -E "gpio-5|gpio-6"
 ```
 
 ## References

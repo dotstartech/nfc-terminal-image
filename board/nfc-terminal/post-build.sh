@@ -81,6 +81,8 @@ if [ -e ${TARGET_DIR}/etc/libnfc-nxp-init.conf ]; then
 fi
 
 # Create NFC console wrapper script for tty1
+# Only create if nfc-lvgl-app package hasn't installed its own version
+if [ ! -x ${TARGET_DIR}/usr/bin/nfc-lvgl-app ]; then
 # This waits for the device, clears splash, and runs nfcDemoApp
 cat > ${TARGET_DIR}/usr/bin/nfc-console << 'NFCEOF'
 #!/bin/sh
@@ -120,6 +122,7 @@ echo ""
 exec /usr/bin/nfcDemoApp poll
 NFCEOF
 chmod 755 ${TARGET_DIR}/usr/bin/nfc-console
+fi
 
 # Create early boot script to run depmod and load display modules
 # This runs before S10udev to ensure modules are available

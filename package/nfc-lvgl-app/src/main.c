@@ -1,0 +1,682 @@
+/**
+ * @file main.c
+ * NFC Check-in/Check-out Demo Application with LVGL UI
+ *
+ * Features:
+ * - Role A and Role B buttons (grey/yellow toggle)
+ * - NFC tag detection displays tag ID
+ * - Check-in/check-out state machine per role
+ * - Touch input support via evdev
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <signal.h>
+#include <time.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <linux/fb.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+
+#define LV_CONF_INCLUDE_SIMPLE
+#include "lvgl/lvgl.h"
+#include "linux_nfc_api.h"
+
+/*====================
+   CONSTANTS
+ *====================*/
+#define DISPLAY_WIDTH   720
+#define DISPLAY_HEIGHT  720
+#define FB_DEVICE       "/dev/fb0"
+#define TOUCH_DEVICE    "/dev/input/event4"
+
+/* Colors */
+#define COLOR_GREY      lv_color_hex(0x808080)
+#define COLOR_YELLOW    lv_color_hex(0xFFD700)
+#define COLOR_CHECKED   lv_color_hex(0x32CD32)  /* Green for checked-in */
+#define COLOR_BG        lv_color_hex(0x1a1a2e)
+#define COLOR_HEADER    lv_color_hex(0x121224)  /* Darker than BG */
+#define COLOR_TEXT      lv_color_hex(0xFFFFFF)
+
+/*====================
+   ROLE STATE MACHINE
+ *====================*/
+typedef enum {
+    ROLE_STATE_UNSELECTED,    /* Grey button, not active */
+    ROLE_STATE_SELECTED,      /* Yellow button, waiting for check-in */
+    ROLE_STATE_CHECKED_IN     /* Green button, checked in with tag */
+} role_state_t;
+
+typedef struct {
+    role_state_t state;
+    char tag_id[64];          /* Tag ID that checked in */
+    lv_obj_t *btn;
+    lv_obj_t *label;
+} role_t;
+
+/*====================
+   GLOBAL STATE
+ *====================*/
+#define NUM_ROLES 8
+static const char *g_role_names[NUM_ROLES] = {"Role A", "Role B", "Role C", "Role D", "Role E", "Role F", "Role G", "Role H"};
+static role_t g_roles[NUM_ROLES] = {0};
+static lv_obj_t *g_status_label = NULL;
+static lv_obj_t *g_header = NULL;
+static lv_obj_t *g_touch_debug_label = NULL;  /* Debug: show touch coords */
+static char g_last_tag_id[64] = "";
+static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
+static volatile int g_running = 1;
+static volatile int g_nfc_ready = 0;
+static volatile int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
+
+/* Framebuffer */
+static int g_fb_fd = -1;
+static uint16_t *g_fb_mem = NULL;  /* RGB565 framebuffer memory */
+static struct fb_var_screeninfo g_vinfo;
+static struct fb_fix_screeninfo g_finfo;
+static lv_display_t *g_display = NULL;
+
+/* Touch input */
+static int g_touch_fd = -1;
+static lv_indev_t *g_touch_indev = NULL;
+static int g_touch_x = 0;
+static int g_touch_y = 0;
+static int g_touch_pressed = 0;
+static int g_touch_cb_count = 0;  /* Debug counter */
+static int g_touch_init_ok = 0;   /* Debug: touch init status */
+static int g_indev_ok = 0;        /* Debug: indev create status */
+
+/*====================
+   TICK FUNCTION
+ *====================*/
+static uint32_t g_tick_start = 0;
+
+uint32_t custom_tick_get(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t tick = (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+    if (g_tick_start == 0) g_tick_start = tick;
+    return tick - g_tick_start;
+}
+
+/*====================
+   CONSOLE CONTROL
+ *====================*/
+static void clear_console(void) {
+    /* Clear the console and hide cursor */
+    printf("\033[2J");      /* Clear screen */
+    printf("\033[H");       /* Move cursor to home */
+    printf("\033[?25l");    /* Hide cursor */
+    fflush(stdout);
+    fflush(stderr);
+    
+    /* Redirect stdout/stderr to log file for debugging */
+    FILE *f = freopen("/tmp/nfc-lvgl-app.log", "w", stdout);
+    if (!f) {
+        /* Try to create a direct debug log */
+        FILE *dbg = fopen("/tmp/freopen-failed.log", "w");
+        if (dbg) { fprintf(dbg, "freopen stdout failed\n"); fclose(dbg); }
+    }
+    freopen("/tmp/nfc-lvgl-app.log", "a", stderr);
+    printf("Log file created\n");
+    fflush(stdout);
+}
+
+static void restore_console(void) {
+    printf("\033[?25h");    /* Show cursor */
+    fflush(stdout);
+}
+
+/*====================
+   FRAMEBUFFER DISPLAY
+ *====================*/
+static int g_flush_count = 0;
+
+static void fb_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    g_flush_count++;
+    
+    /* Log every 100th flush or if area includes status label region (y < 300) */
+    if (g_flush_count % 100 == 0 || (area->y1 < 300 && area->y2 > 150)) {
+        printf("FB: flush #%d area=(%d,%d)-(%d,%d)\n", 
+               g_flush_count, area->x1, area->y1, area->x2, area->y2);
+        fflush(stdout);
+    }
+    
+    if (g_fb_mem == NULL) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    int32_t w = area->x2 - area->x1 + 1;
+    uint16_t *src = (uint16_t *)px_map;
+    uint32_t stride = g_finfo.line_length / 2;  /* pixels per line */
+
+    for (int32_t y = area->y1; y <= area->y2; y++) {
+        if (y >= 0 && y < (int32_t)g_vinfo.yres) {
+            uint16_t *dst = g_fb_mem + y * stride + area->x1;
+            int32_t copy_w = w;
+            int32_t start_x = area->x1;
+
+            /* Clip to screen bounds */
+            if (start_x < 0) {
+                copy_w += start_x;
+                src -= start_x;
+                start_x = 0;
+            }
+            if (start_x + copy_w > (int32_t)g_vinfo.xres) {
+                copy_w = g_vinfo.xres - start_x;
+            }
+
+            if (copy_w > 0) {
+                memcpy(dst, src, copy_w * 2);
+            }
+        }
+        src += w;
+    }
+
+    lv_display_flush_ready(disp);
+}
+
+static int fb_init(void) {
+    g_fb_fd = open(FB_DEVICE, O_RDWR);
+    if (g_fb_fd < 0) {
+        perror("Cannot open framebuffer");
+        return -1;
+    }
+
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &g_vinfo) < 0) {
+        perror("FBIOGET_VSCREENINFO");
+        close(g_fb_fd);
+        return -1;
+    }
+
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &g_finfo) < 0) {
+        perror("FBIOGET_FSCREENINFO");
+        close(g_fb_fd);
+        return -1;
+    }
+
+    if (g_vinfo.bits_per_pixel != 16) {
+        fprintf(stderr, "Unsupported bpp: %d (need 16)\n", g_vinfo.bits_per_pixel);
+        close(g_fb_fd);
+        return -1;
+    }
+
+    size_t fb_size = g_vinfo.yres * g_finfo.line_length;
+    g_fb_mem = mmap(NULL, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fb_mem == MAP_FAILED) {
+        perror("mmap framebuffer");
+        g_fb_mem = NULL;
+        close(g_fb_fd);
+        return -1;
+    }
+
+    /* Clear framebuffer to black */
+    memset(g_fb_mem, 0, fb_size);
+
+    return 0;
+}
+
+static void fb_deinit(void) {
+    if (g_fb_mem && g_fb_mem != MAP_FAILED) {
+        size_t fb_size = g_vinfo.yres * g_finfo.line_length;
+        munmap(g_fb_mem, fb_size);
+        g_fb_mem = NULL;
+    }
+    if (g_fb_fd >= 0) {
+        close(g_fb_fd);
+        g_fb_fd = -1;
+    }
+}
+
+/*====================
+   TOUCH INPUT
+ *====================*/
+/* Touch coordinate ranges (set during init) */
+static int g_touch_x_min = 0, g_touch_x_max = 720;
+static int g_touch_y_min = 0, g_touch_y_max = 720;
+
+static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    struct input_event ev;
+    
+    g_touch_cb_count++;  /* Debug: count callback invocations */
+
+    /* Read all pending events */
+    while (g_touch_fd >= 0) {
+        ssize_t n = read(g_touch_fd, &ev, sizeof(ev));
+        if (n != sizeof(ev)) break;
+
+        if (ev.type == EV_ABS) {
+            switch (ev.code) {
+                case ABS_X:
+                case ABS_MT_POSITION_X:
+                    g_touch_x = ev.value;
+                    break;
+                case ABS_Y:
+                case ABS_MT_POSITION_Y:
+                    g_touch_y = ev.value;
+                    break;
+                case ABS_MT_TRACKING_ID:
+                    /* MT tracking: >= 0 means touch down, -1 means touch up */
+                    g_touch_pressed = (ev.value >= 0) ? 1 : 0;
+                    break;
+            }
+        } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
+            g_touch_pressed = ev.value;
+        }
+    }
+
+    /* Scale touch coordinates to display */
+    int scaled_x = (g_touch_x - g_touch_x_min) * 720 / (g_touch_x_max - g_touch_x_min + 1);
+    int scaled_y = (g_touch_y - g_touch_y_min) * 720 / (g_touch_y_max - g_touch_y_min + 1);
+    
+    /* Clamp to display bounds */
+    if (scaled_x < 0) scaled_x = 0;
+    if (scaled_x >= 720) scaled_x = 719;
+    if (scaled_y < 0) scaled_y = 0;
+    if (scaled_y >= 720) scaled_y = 719;
+
+    data->point.x = scaled_x;
+    data->point.y = scaled_y;
+    data->state = g_touch_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+static int touch_init(void) {
+    g_touch_fd = open(TOUCH_DEVICE, O_RDONLY | O_NONBLOCK);
+    if (g_touch_fd < 0) {
+        perror("Cannot open touch device");
+        return -1;
+    }
+
+    /* Get touch device info for coordinate scaling */
+    struct input_absinfo abs_x, abs_y;
+    /* Try multitouch coords first, then regular ABS */
+    if (ioctl(g_touch_fd, EVIOCGABS(ABS_MT_POSITION_X), &abs_x) == 0 &&
+        ioctl(g_touch_fd, EVIOCGABS(ABS_MT_POSITION_Y), &abs_y) == 0) {
+        g_touch_x_min = abs_x.minimum;
+        g_touch_x_max = abs_x.maximum;
+        g_touch_y_min = abs_y.minimum;
+        g_touch_y_max = abs_y.maximum;
+        printf("Touch MT: X=%d-%d, Y=%d-%d\n", 
+               g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
+    } else if (ioctl(g_touch_fd, EVIOCGABS(ABS_X), &abs_x) == 0 &&
+               ioctl(g_touch_fd, EVIOCGABS(ABS_Y), &abs_y) == 0) {
+        g_touch_x_min = abs_x.minimum;
+        g_touch_x_max = abs_x.maximum;
+        g_touch_y_min = abs_y.minimum;
+        g_touch_y_max = abs_y.maximum;
+        printf("Touch ABS: X=%d-%d, Y=%d-%d\n",
+               g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
+    }
+
+    printf("Touch initialized\n");
+    return 0;
+}
+
+static void touch_deinit(void) {
+    if (g_touch_fd >= 0) {
+        close(g_touch_fd);
+        g_touch_fd = -1;
+    }
+}
+
+/*====================
+   UI HELPERS
+ *====================*/
+static void update_button_color(role_t *role) {
+    lv_color_t color;
+
+    switch (role->state) {
+        case ROLE_STATE_SELECTED:
+            color = COLOR_YELLOW;
+            break;
+        case ROLE_STATE_CHECKED_IN:
+            color = COLOR_CHECKED;
+            break;
+        case ROLE_STATE_UNSELECTED:
+        default:
+            color = COLOR_GREY;
+            break;
+    }
+
+    lv_obj_set_style_bg_color(role->btn, color, LV_PART_MAIN);
+}
+
+static void update_status_label(void) {
+    char status[256] = "";
+    const char *tag_str = (g_last_tag_id[0] != '\0') ? g_last_tag_id : "";
+
+    printf("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", g_nfc_ready, tag_str);
+    fflush(stdout);
+
+    /* Build status string */
+    if (tag_str[0] == '\0') {
+        if (g_nfc_ready) {
+            snprintf(status, sizeof(status), "Waiting for NFC card...");
+        } else {
+            snprintf(status, sizeof(status), "Initializing NFC...");
+        }
+    } else {
+        snprintf(status, sizeof(status), "Tag: %s", tag_str);
+    }
+
+    lv_label_set_text(g_status_label, status);
+    printf("UI: set label text to: '%s'\n", status);
+    fflush(stdout);
+}
+
+/*====================
+   BUTTON CALLBACKS
+ *====================*/
+static void role_btn_event_cb(lv_event_t *e) {
+    role_t *role = (role_t *)lv_event_get_user_data(e);
+
+    /* Note: No mutex needed here - we're called from lv_timer_handler() 
+       which already holds the mutex via the main loop */
+
+    if (role->state == ROLE_STATE_UNSELECTED) {
+        role->state = ROLE_STATE_SELECTED;
+    } else if (role->state == ROLE_STATE_SELECTED) {
+        role->state = ROLE_STATE_UNSELECTED;
+    }
+    /* CHECKED_IN state: button click does nothing (need same tag to check out) */
+
+    update_button_color(role);
+    update_status_label();
+}
+
+/*====================
+   NFC TAG HANDLING
+ *====================*/
+static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
+    size_t pos = 0;
+    for (unsigned int i = 0; i < tag->uid_length && pos < buflen - 3; i++) {
+        pos += snprintf(buf + pos, buflen - pos, "%02X",
+                        (unsigned char)tag->uid[i]);
+        if (i < tag->uid_length - 1 && pos < buflen - 1) {
+            buf[pos++] = ':';
+        }
+    }
+    buf[pos] = '\0';
+}
+
+static void process_tag_discovery(const char *tag_id) {
+    int same_tag = (strcmp(tag_id, g_last_tag_id) == 0);
+
+    printf("NFC: process_tag_discovery tag=%s, same=%d\n", tag_id, same_tag);
+    fflush(stdout);
+
+    /* Process all roles */
+    for (int i = 0; i < NUM_ROLES; i++) {
+        role_t *role = &g_roles[i];
+        if (role->state == ROLE_STATE_CHECKED_IN) {
+            if (same_tag && strcmp(role->tag_id, tag_id) == 0) {
+                /* Same tag -> check out */
+                role->state = ROLE_STATE_UNSELECTED;
+                role->tag_id[0] = '\0';
+            }
+        } else if (role->state == ROLE_STATE_SELECTED) {
+            /* Selected -> check in */
+            role->state = ROLE_STATE_CHECKED_IN;
+            strncpy(role->tag_id, tag_id, sizeof(role->tag_id) - 1);
+        }
+    }
+
+    /* Update last seen tag */
+    strncpy(g_last_tag_id, tag_id, sizeof(g_last_tag_id) - 1);
+
+    /* Signal main loop to refresh UI */
+    g_ui_needs_refresh = 1;
+}
+
+/*====================
+   NFC CALLBACKS
+ *====================*/
+static void on_tag_arrival(nfc_tag_info_t *tag_info) {
+    printf("NFC: on_tag_arrival called, tag_info=%p\n", (void*)tag_info);
+    fflush(stdout);
+    if (!tag_info) return;
+    char tag_id[64];
+    format_tag_id(tag_info, tag_id, sizeof(tag_id));
+    printf("NFC: Tag detected: %s (uid_len=%u)\n", tag_id, tag_info->uid_length);
+    fflush(stdout);
+    process_tag_discovery(tag_id);
+}
+
+static void on_tag_departure(void) {
+    /* Nothing to do on tag removal */
+}
+
+static nfcTagCallback_t g_nfc_callbacks = {
+    .onTagArrival = on_tag_arrival,
+    .onTagDeparture = on_tag_departure
+};
+
+/*====================
+   NFC THREAD
+ *====================*/
+static void *nfc_thread(void *arg) {
+    (void)arg;
+    int res;
+
+    /* Give the UI time to render first frame */
+    sleep(2);
+
+    printf("NFC: Calling doInitialize...\n");
+    fflush(stdout);
+    res = nfcManager_doInitialize();
+    printf("NFC: doInitialize returned %d\n", res);
+    fflush(stdout);
+    
+    if (res != 0) {
+        fprintf(stderr, "NFC init failed: %d\n", res);
+        fflush(stderr);
+        pthread_mutex_lock(&g_ui_mutex);
+        lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
+        pthread_mutex_unlock(&g_ui_mutex);
+        return NULL;
+    }
+
+    printf("NFC: Registering callbacks...\n");
+    fflush(stdout);
+    nfcManager_registerTagCallback(&g_nfc_callbacks);
+    
+    printf("NFC: Enabling discovery (reader_only=0)...\n");
+    fflush(stdout);
+    nfcManager_enableDiscovery(DEFAULT_NFA_TECH_MASK, 0, 0, 0);
+    
+    printf("NFC: Ready!\n");
+    fflush(stdout);
+
+    /* Mark NFC as ready - main loop will refresh UI */
+    g_nfc_ready = 1;
+    g_ui_needs_refresh = 1;
+
+    /* Keep thread alive while polling */
+    while (g_running) {
+        sleep(1);
+    }
+
+    nfcManager_disableDiscovery();
+    nfcManager_deregisterTagCallback();
+    nfcManager_doDeinitialize();
+
+    return NULL;
+}
+
+/*====================
+   UI SETUP
+ *====================*/
+static void create_ui(void) {
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+
+    /* Header: 720x120 at top */
+    g_header = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_header);
+    lv_obj_set_size(g_header, 720, 120);
+    lv_obj_set_pos(g_header, 0, 0);
+    lv_obj_set_style_bg_color(g_header, COLOR_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_pad_left(g_header, 16, LV_PART_MAIN);
+
+    /* Status label in header, left-aligned, vertically centered */
+    g_status_label = lv_label_create(g_header);
+    lv_label_set_text(g_status_label, "Initializing NFC...");
+    lv_obj_set_style_text_color(g_status_label, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
+    lv_obj_set_width(g_status_label, 688);
+    lv_obj_align(g_status_label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* Button dimensions: 8px gaps, 4 buttons per row */
+    /* Total width = 720, side padding = 8 each, 3 gaps of 8 = 40px total padding */
+    /* Button width = (720 - 40) / 4 = 170px */
+    const int btn_width = 170;
+    const int btn_height = 90;
+    const int gap = 8;
+    const int row1_y = 128;  /* First row below header */
+    const int row2_y = row1_y + btn_height + gap;
+
+    /* Create 8 buttons in 2 rows */
+    for (int i = 0; i < NUM_ROLES; i++) {
+        int row = i / 4;
+        int col = i % 4;
+        int x = gap + col * (btn_width + gap);
+        int y = (row == 0) ? row1_y : row2_y;
+
+        g_roles[i].btn = lv_button_create(scr);
+        lv_obj_set_size(g_roles[i].btn, btn_width, btn_height);
+        lv_obj_set_pos(g_roles[i].btn, x, y);
+        lv_obj_set_style_bg_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(g_roles[i].btn, 8, LV_PART_MAIN);
+        lv_obj_add_event_cb(g_roles[i].btn, role_btn_event_cb, LV_EVENT_CLICKED, &g_roles[i]);
+
+        g_roles[i].label = lv_label_create(g_roles[i].btn);
+        lv_label_set_text(g_roles[i].label, g_role_names[i]);
+        lv_obj_set_style_text_font(g_roles[i].label, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_center(g_roles[i].label);
+    }
+
+    /* Touch debug label at bottom (hidden by default, shows touch status) */
+    g_touch_debug_label = lv_label_create(scr);
+    lv_label_set_text(g_touch_debug_label, "");
+    lv_obj_set_style_text_color(g_touch_debug_label, lv_color_hex(0x808080), LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_touch_debug_label, &lv_font_montserrat_18, LV_PART_MAIN);
+    lv_obj_align(g_touch_debug_label, LV_ALIGN_BOTTOM_MID, 0, -11);
+}
+
+/*====================
+   SIGNAL HANDLER
+ *====================*/
+static void signal_handler(int sig) {
+    (void)sig;
+    g_running = 0;
+}
+
+/*====================
+   MAIN
+ *====================*/
+int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+    pthread_t nfc_tid;
+
+    /* Setup signal handlers */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    /* Clear console and hide cursor */
+    clear_console();
+
+    /* Initialize framebuffer */
+    if (fb_init() != 0) {
+        fprintf(stderr, "Failed to initialize framebuffer\n");
+        restore_console();
+        return 1;
+    }
+
+    /* Initialize LVGL */
+    lv_init();
+
+    /* Create display */
+    g_display = lv_display_create(g_vinfo.xres, g_vinfo.yres);
+    if (!g_display) {
+        fprintf(stderr, "Failed to create display\n");
+        fb_deinit();
+        restore_console();
+        return 1;
+    }
+
+    /* Setup draw buffers - use FULL rendering for cleaner display */
+    static uint8_t buf1[DISPLAY_WIDTH * 40 * 2];  /* 40 lines * 2 bytes/pixel (RGB565) */
+    static uint8_t buf2[DISPLAY_WIDTH * 40 * 2];
+    lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(g_display, fb_flush_cb);
+
+    /* Initialize touch input */
+    if (touch_init() == 0) {
+        g_touch_init_ok = 1;
+        g_touch_indev = lv_indev_create();
+        if (g_touch_indev) {
+            g_indev_ok = 1;
+            lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
+            lv_indev_set_read_cb(g_touch_indev, touch_read_cb);
+            lv_indev_set_display(g_touch_indev, g_display);  /* Associate with display */
+        }
+    }
+
+    /* Create UI */
+    create_ui();
+
+    /* Force full screen refresh */
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(g_display);
+
+    /* Start NFC thread */
+    if (pthread_create(&nfc_tid, NULL, nfc_thread, NULL) != 0) {
+        fprintf(stderr, "Failed to start NFC thread\n");
+        touch_deinit();
+        fb_deinit();
+        restore_console();
+        return 1;
+    }
+
+    /* Main loop */
+    while (g_running) {
+        pthread_mutex_lock(&g_ui_mutex);
+        
+        /* Check if NFC thread requested UI refresh */
+        if (g_ui_needs_refresh) {
+            g_ui_needs_refresh = 0;
+            update_status_label();
+            for (int i = 0; i < NUM_ROLES; i++) {
+                update_button_color(&g_roles[i]);
+            }
+            lv_obj_invalidate(lv_screen_active());
+            lv_refr_now(g_display);  /* Force immediate refresh */
+            printf("UI: Refreshed from main loop\n");
+            fflush(stdout);
+        }
+        
+        lv_timer_handler();
+        pthread_mutex_unlock(&g_ui_mutex);
+        usleep(10000);  /* 10ms - ~100 FPS */
+    }
+
+    /* Cleanup */
+    pthread_join(nfc_tid, NULL);
+    touch_deinit();
+    fb_deinit();
+    restore_console();
+
+    return 0;
+}

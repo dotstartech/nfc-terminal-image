@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# NFC Console - runs nfc-lvgl-app on the display (tty1)
+#
+
+NFC_DEV="/dev/pn544"
+
+# Wait for NFC device to appear (max 30 seconds)
+echo "Waiting for NFC hardware..."
+count=0
+while [ ! -c "$NFC_DEV" ] && [ $count -lt 60 ]; do
+    sleep 0.5
+    count=$((count + 1))
+done
+
+if [ ! -c "$NFC_DEV" ]; then
+    echo "ERROR: NFC device $NFC_DEV not found!"
+    echo "Check: lsmod | grep pn5xx"
+    echo "       dmesg | grep -i nfc"
+    echo ""
+    echo "Press Enter to retry..."
+    read dummy
+    exit 1
+fi
+
+# Clear the screen
+clear
+
+# Set permissions
+chmod 666 "$NFC_DEV" 2>/dev/null
+
+# Run nfc-lvgl-app in foreground on this console
+exec /usr/bin/nfc-lvgl-app
