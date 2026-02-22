@@ -8,7 +8,7 @@ NFC_LVGL_APP_VERSION = 1.0.0
 NFC_LVGL_APP_SITE_METHOD = local
 NFC_LVGL_APP_SITE = $(BR2_EXTERNAL_NFC_TERMINAL_PATH)/package/nfc-lvgl-app/src
 NFC_LVGL_APP_LICENSE = MIT
-NFC_LVGL_APP_DEPENDENCIES = libnfc-nci libdrm
+NFC_LVGL_APP_DEPENDENCIES = libnfc-nci libdrm paho-mqtt-c
 
 # LVGL version to download
 NFC_LVGL_APP_LVGL_VERSION = v9.2.2

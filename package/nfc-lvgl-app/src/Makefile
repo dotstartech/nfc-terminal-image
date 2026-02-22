@@ -16,7 +16,7 @@ INCLUDES = -I$(CURDIR) \
            -DLV_CONF_INCLUDE_SIMPLE
 
 # Libraries
-LIBS = -lnfc_nci_linux -lpthread -lm
+LIBS = -lnfc_nci_linux -lpaho-mqtt3c -lpthread -lm
 
 # Find ALL LVGL source files recursively
 LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)

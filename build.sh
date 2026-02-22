@@ -25,6 +25,32 @@ print_error() {
     echo -e "${RED}[!]${NC} $1"
 }
 
+# Apply patches to buildroot
+apply_patches() {
+    local patches_dir="${SCRIPT_DIR}/patches/buildroot"
+    local marker_file="${BUILDROOT_DIR}/.patches_applied"
+    
+    if [ -d "${patches_dir}" ] && [ -n "$(ls -A ${patches_dir}/*.patch 2>/dev/null)" ]; then
+        # Check if patches already applied
+        if [ -f "${marker_file}" ]; then
+            return 0
+        fi
+        
+        print_status "Applying buildroot patches..."
+        for patch in ${patches_dir}/*.patch; do
+            if [ -f "${patch}" ]; then
+                print_status "  Applying $(basename ${patch})..."
+                if ! patch -p1 -N --dry-run < "${patch}" > /dev/null 2>&1; then
+                    print_warning "  Patch $(basename ${patch}) already applied or conflicts, skipping"
+                else
+                    patch -p1 < "${patch}"
+                fi
+            fi
+        done
+        touch "${marker_file}"
+    fi
+}
+
 # Check if buildroot exists
 if [ ! -d "${BUILDROOT_DIR}" ]; then
     print_error "Buildroot directory not found. Please clone buildroot first:"
@@ -33,6 +59,9 @@ if [ ! -d "${BUILDROOT_DIR}" ]; then
 fi
 
 cd "${BUILDROOT_DIR}"
+
+# Apply patches to buildroot if needed
+apply_patches
 
 case "${1:-build}" in
     config)

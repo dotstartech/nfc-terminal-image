@@ -1,5 +1,5 @@
 # Buildroot directory (use submodule or clone separately)
-buildroot/
+/buildroot/
 
 # Build outputs
 output/

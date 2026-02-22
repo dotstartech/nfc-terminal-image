@@ -3,6 +3,7 @@ config BR2_PACKAGE_NFC_LVGL_APP
 	depends on BR2_TOOLCHAIN_HAS_THREADS
 	select BR2_PACKAGE_LIBNFC_NCI
 	select BR2_PACKAGE_LIBDRM
+	select BR2_PACKAGE_PAHO_MQTT_C
 	help
 	  NFC check-in/check-out demo application with LVGL graphical UI.
 	  Displays Role A/B buttons and shows NFC tag IDs when cards are detected.

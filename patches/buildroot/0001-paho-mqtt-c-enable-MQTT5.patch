@@ -1,0 +1,14 @@
+diff --git a/package/paho-mqtt-c/paho-mqtt-c.mk b/package/paho-mqtt-c/paho-mqtt-c.mk
+index ec4e96c7..78773d43 100644
+--- a/package/paho-mqtt-c/paho-mqtt-c.mk
++++ b/package/paho-mqtt-c/paho-mqtt-c.mk
+@@ -14,7 +14,8 @@ PAHO_MQTT_C_CONF_OPTS = \
+ 	-DCMAKE_INSTALL_DOCDIR=share/doc/libpaho-mqtt \
+ 	-DPAHO_ENABLE_TESTING=FALSE \
+ 	-DPAHO_ENABLE_CPACK=FALSE \
+-	-DPAHO_HIGH_PERFORMANCE=TRUE
++	-DPAHO_HIGH_PERFORMANCE=TRUE \
++	-DPAHO_BUILD_MQTT5=TRUE
+ 
+ ifeq ($(BR2_PACKAGE_OPENSSL),y)
+ PAHO_MQTT_C_DEPENDENCIES += openssl

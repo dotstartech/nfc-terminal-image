@@ -22,10 +22,13 @@
 #include <linux/input.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <net/if.h>
 
 #define LV_CONF_INCLUDE_SIMPLE
 #include "lvgl/lvgl.h"
 #include "linux_nfc_api.h"
+#include "MQTTClient.h"
 
 /*====================
    CONSTANTS
@@ -35,12 +38,20 @@
 #define FB_DEVICE       "/dev/fb0"
 #define TOUCH_DEVICE    "/dev/input/event4"
 
+/* MQTT Configuration */
+#define MQTT_ADDRESS    "tcp://192.168.188.50:1883"
+#define MQTT_CLIENT_ID  "nfc-terminal"
+#define MQTT_USERNAME   "admin"
+#define MQTT_PASSWORD   "admin"
+#define MQTT_QOS        1
+#define MQTT_TIMEOUT    3000L  /* 3 seconds */
+
 /* Colors */
 #define COLOR_GREY      lv_color_hex(0x808080)
 #define COLOR_YELLOW    lv_color_hex(0xFFD700)
-#define COLOR_CHECKED   lv_color_hex(0x32CD32)  /* Green for checked-in */
+#define COLOR_CHECKED   lv_color_hex(0x32CD32)
 #define COLOR_BG        lv_color_hex(0x1a1a2e)
-#define COLOR_HEADER    lv_color_hex(0x121224)  /* Darker than BG */
+#define COLOR_HEADER    lv_color_hex(0x121224)
 #define COLOR_TEXT      lv_color_hex(0xFFFFFF)
 
 /*====================
@@ -91,6 +102,24 @@ static int g_touch_cb_count = 0;  /* Debug counter */
 static int g_touch_init_ok = 0;   /* Debug: touch init status */
 static int g_indev_ok = 0;        /* Debug: indev create status */
 
+/* MQTT Client */
+static MQTTClient g_mqtt_client = NULL;
+static volatile int g_mqtt_connected = 0;
+static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
+static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
+
+/* MQTT Message Queue - simple ring buffer for tag IDs to publish */
+#define MQTT_QUEUE_SIZE 8
+static char g_mqtt_queue[MQTT_QUEUE_SIZE][64];
+static volatile int g_mqtt_queue_head = 0;
+static volatile int g_mqtt_queue_tail = 0;
+static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Forward declarations */
+static void mqtt_publish_tag_event(const char *tag_id);
+static int mqtt_reconnect(void);
+static void mqtt_queue_tag(const char *tag_id);
+
 /*====================
    TICK FUNCTION
  *====================*/
@@ -123,8 +152,6 @@ static void clear_console(void) {
         if (dbg) { fprintf(dbg, "freopen stdout failed\n"); fclose(dbg); }
     }
     freopen("/tmp/nfc-lvgl-app.log", "a", stderr);
-    printf("Log file created\n");
-    fflush(stdout);
 }
 
 static void restore_console(void) {
@@ -431,6 +458,9 @@ static void process_tag_discovery(const char *tag_id) {
     /* Update last seen tag */
     strncpy(g_last_tag_id, tag_id, sizeof(g_last_tag_id) - 1);
 
+    /* Queue tag event for MQTT publish from main thread */
+    mqtt_queue_tag(tag_id);
+
     /* Signal main loop to refresh UI */
     g_ui_needs_refresh = 1;
 }
@@ -468,12 +498,7 @@ static void *nfc_thread(void *arg) {
     /* Give the UI time to render first frame */
     sleep(2);
 
-    printf("NFC: Calling doInitialize...\n");
-    fflush(stdout);
     res = nfcManager_doInitialize();
-    printf("NFC: doInitialize returned %d\n", res);
-    fflush(stdout);
-    
     if (res != 0) {
         fprintf(stderr, "NFC init failed: %d\n", res);
         fflush(stderr);
@@ -481,17 +506,20 @@ static void *nfc_thread(void *arg) {
         lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
         pthread_mutex_unlock(&g_ui_mutex);
         return NULL;
+    } else{
+        printf("NFC: Initialized NFC\n");
+        fflush(stdout);
     }
 
-    printf("NFC: Registering callbacks...\n");
-    fflush(stdout);
+    /*printf("NFC: Registering callbacks...\n");
+    fflush(stdout);*/
     nfcManager_registerTagCallback(&g_nfc_callbacks);
     
-    printf("NFC: Enabling discovery (reader_only=0)...\n");
-    fflush(stdout);
+    /*printf("NFC: Enabling discovery (reader_only=0)...\n");
+    fflush(stdout);*/
     nfcManager_enableDiscovery(DEFAULT_NFA_TECH_MASK, 0, 0, 0);
     
-    printf("NFC: Ready!\n");
+    printf("NFC: Enabled NFC discovery\n");
     fflush(stdout);
 
     /* Mark NFC as ready - main loop will refresh UI */
@@ -575,6 +603,260 @@ static void create_ui(void) {
 }
 
 /*====================
+   MQTT CLIENT
+ *====================*/
+static int mqtt_init(void) {
+    MQTTClient_createOptions create_opts = MQTTClient_createOptions_initializer;
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
+    MQTTResponse response = MQTTResponse_initializer;
+    int rc;
+
+    /* Must set MQTT 5.0 at creation time for connect5() to work */
+    create_opts.MQTTVersion = MQTTVERSION_5;
+
+    rc = MQTTClient_createWithOptions(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
+                                      MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
+    if (rc != MQTTCLIENT_SUCCESS) {
+        fprintf(stderr, "MQTT: Failed to create client, rc=%d\n", rc);
+        return -1;
+    } else {
+        printf("MQTT: Created client for %s...\n", MQTT_ADDRESS);
+        fflush(stdout);
+    }
+
+    /* Configure MQTT 5.0 connection */
+    conn_opts.MQTTVersion = MQTTVERSION_5;
+    conn_opts.keepAliveInterval = 60;
+    conn_opts.cleanstart = 1;
+    conn_opts.username = MQTT_USERNAME;
+    conn_opts.password = MQTT_PASSWORD;
+    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;  /* 3 second connection timeout */
+
+    response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
+    rc = response.reasonCode;
+
+    /*printf("MQTT: MQTTClient_connect5 returned rc=%d\n", rc);
+    fflush(stdout);*/
+
+    MQTTResponse_free(response);
+
+    if (rc != MQTTCLIENT_SUCCESS && rc != MQTTREASONCODE_SUCCESS) {
+        printf("MQTT: Failed to connect, rc=%d\n", rc);
+        fflush(stdout);
+        MQTTClient_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        return -1;
+    }
+
+    g_mqtt_connected = 1;
+    printf("MQTT: Connected to %s (MQTT v5.0)\n", MQTT_ADDRESS);
+    fflush(stdout);
+
+    return 0;
+}
+
+static void mqtt_deinit(void) {
+    if (g_mqtt_client) {
+        if (g_mqtt_connected) {
+            printf("MQTT: Disconnecting...\n");
+            fflush(stdout);
+            MQTTClient_disconnect(g_mqtt_client, MQTT_TIMEOUT);
+            g_mqtt_connected = 0;
+        }
+        MQTTClient_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        printf("MQTT: Client destroyed\n");
+        fflush(stdout);
+    }
+}
+
+static int mqtt_reconnect(void) {
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
+    MQTTResponse response = MQTTResponse_initializer;
+
+    if (!g_mqtt_client) {
+        return -1;
+    }
+
+    conn_opts.MQTTVersion = MQTTVERSION_5;
+    conn_opts.keepAliveInterval = 60;
+    conn_opts.cleanstart = 1;
+    conn_opts.username = MQTT_USERNAME;
+    conn_opts.password = MQTT_PASSWORD;
+    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
+
+    response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
+    int rc = response.reasonCode;
+    MQTTResponse_free(response);
+
+    if (rc != MQTTCLIENT_SUCCESS && rc != MQTTREASONCODE_SUCCESS) {
+        printf("MQTT: Reconnect failed, rc=%d\n", rc);
+        fflush(stdout);
+        g_mqtt_connected = 0;
+        return -1;
+    }
+
+    g_mqtt_connected = 1;
+    printf("MQTT: Reconnected successfully\n");
+    fflush(stdout);
+    return 0;
+}
+
+static void get_mac_address(void) {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        snprintf(g_device_mac, sizeof(g_device_mac), "00:00:00:00:00:00");
+        return;
+    }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
+
+    if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
+        close(sock);
+        snprintf(g_device_mac, sizeof(g_device_mac), "00:00:00:00:00:00");
+        return;
+    }
+    close(sock);
+
+    unsigned char *mac = (unsigned char *)ifr.ifr_hwaddr.sa_data;
+    snprintf(g_device_mac, sizeof(g_device_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    /* Build MQTT topic: data/<MAC_NO_COLONS>/nfc */
+    snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%02X%02X%02X%02X%02X%02X/nfc",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    /*
+    printf("Device MAC: %s\n", g_device_mac);
+    printf("MQTT Topic: %s\n", g_mqtt_topic);
+    fflush(stdout);
+    */
+}
+
+static void mqtt_publish_tag_event(const char *tag_id) {
+    #define MQTT_MAX_RETRIES 3
+
+    if (!g_mqtt_client) {
+        printf("MQTT: No client, skipping publish\n");
+        fflush(stdout);
+        return;
+    }
+
+    /* Build tag ID without colons: "A4:FB:3B:A0" -> "A4FB3BA0" */
+    char tag_no_colons[64];
+    int j = 0;
+    for (int i = 0; tag_id[i] && j < (int)sizeof(tag_no_colons) - 1; i++) {
+        if (tag_id[i] != ':') {
+            tag_no_colons[j++] = tag_id[i];
+        }
+    }
+    tag_no_colons[j] = '\0';
+
+    /* Build JSON payload with tagId only */
+    char payload[128];
+    snprintf(payload, sizeof(payload), "{\"tagId\":\"%s\"}", tag_no_colons);
+
+    /* Retry loop for publish with reconnect on failure */
+    for (int attempt = 1; attempt <= MQTT_MAX_RETRIES; attempt++) {
+        /* Check if still connected, reconnect if needed */
+        if (!MQTTClient_isConnected(g_mqtt_client)) {
+            printf("MQTT: Connection lost, attempting reconnect (attempt %d/%d)...\n", attempt, MQTT_MAX_RETRIES);
+            fflush(stdout);
+            g_mqtt_connected = 0;
+            if (mqtt_reconnect() != 0) {
+                printf("MQTT: Reconnect failed\n");
+                fflush(stdout);
+                if (attempt < MQTT_MAX_RETRIES) {
+                    usleep(350000);  /* Wait 350ms before retry */
+                    continue;
+                }
+                printf("MQTT: All reconnect attempts exhausted, giving up\n");
+                fflush(stdout);
+                return;
+            }
+        }
+
+        MQTTClient_deliveryToken token;
+        MQTTResponse response = MQTTClient_publish5(g_mqtt_client, g_mqtt_topic,
+                                                     (int)strlen(payload), payload,
+                                                     MQTT_QOS, 0, NULL, &token);
+        if (response.reasonCode != MQTTCLIENT_SUCCESS && response.reasonCode != MQTTREASONCODE_SUCCESS) {
+            printf("MQTT: Failed to publish, rc=%d (attempt %d/%d)\n", response.reasonCode, attempt, MQTT_MAX_RETRIES);
+            fflush(stdout);
+            MQTTResponse_free(response);
+            g_mqtt_connected = 0;
+            if (attempt < MQTT_MAX_RETRIES) {
+                usleep(350000);  /* Wait 350ms before retry */
+                continue;
+            }
+            return;
+        }
+        MQTTResponse_free(response);
+
+        int rc = MQTTClient_waitForCompletion(g_mqtt_client, token, MQTT_TIMEOUT);
+        if (rc != MQTTCLIENT_SUCCESS) {
+            printf("MQTT: Publish timeout, rc=%d (attempt %d/%d)\n", rc, attempt, MQTT_MAX_RETRIES);
+            fflush(stdout);
+            g_mqtt_connected = 0;
+            if (attempt < MQTT_MAX_RETRIES) {
+                usleep(350000);  /* Wait 350ms before retry */
+                continue;
+            }
+            return;
+        }
+
+        printf("MQTT: Published to topic='%s' payload='%s'\n", g_mqtt_topic, payload);
+        fflush(stdout);
+        return;
+    }
+}
+
+/* Queue a tag ID for publishing from main thread */
+static void mqtt_queue_tag(const char *tag_id) {
+    pthread_mutex_lock(&g_mqtt_queue_mutex);
+
+    /* Deduplicate: don't queue if same as last queued tag */
+    if (g_mqtt_queue_head != g_mqtt_queue_tail) {
+        int last_idx = (g_mqtt_queue_head - 1 + MQTT_QUEUE_SIZE) % MQTT_QUEUE_SIZE;
+        if (strcmp(g_mqtt_queue[last_idx], tag_id) == 0) {
+            pthread_mutex_unlock(&g_mqtt_queue_mutex);
+            return;  /* Skip duplicate */
+        }
+    }
+
+    int next_head = (g_mqtt_queue_head + 1) % MQTT_QUEUE_SIZE;
+    if (next_head != g_mqtt_queue_tail) {
+        strncpy(g_mqtt_queue[g_mqtt_queue_head], tag_id, sizeof(g_mqtt_queue[0]) - 1);
+        g_mqtt_queue[g_mqtt_queue_head][sizeof(g_mqtt_queue[0]) - 1] = '\0';
+        g_mqtt_queue_head = next_head;
+    } else {
+        printf("MQTT: Queue full, dropping message\n");
+        fflush(stdout);
+    }
+    pthread_mutex_unlock(&g_mqtt_queue_mutex);
+}
+
+/* Process queued MQTT messages - call from main thread only */
+static void mqtt_process_queue(void) {
+    char tag_id[64];
+    while (1) {
+        pthread_mutex_lock(&g_mqtt_queue_mutex);
+        if (g_mqtt_queue_head == g_mqtt_queue_tail) {
+            pthread_mutex_unlock(&g_mqtt_queue_mutex);
+            break;
+        }
+        strncpy(tag_id, g_mqtt_queue[g_mqtt_queue_tail], sizeof(tag_id) - 1);
+        tag_id[sizeof(tag_id) - 1] = '\0';
+        g_mqtt_queue_tail = (g_mqtt_queue_tail + 1) % MQTT_QUEUE_SIZE;
+        pthread_mutex_unlock(&g_mqtt_queue_mutex);
+        
+        mqtt_publish_tag_event(tag_id);
+    }
+}
+
+/*====================
    SIGNAL HANDLER
  *====================*/
 static void signal_handler(int sig) {
@@ -641,6 +923,14 @@ int main(int argc, char *argv[]) {
     lv_obj_invalidate(lv_screen_active());
     lv_refr_now(g_display);
 
+    /* Get device MAC address */
+    get_mac_address();
+
+    /* Initialize MQTT client */
+    if (mqtt_init() != 0) {
+        fprintf(stderr, "Warning: MQTT client initialization failed, continuing without MQTT\n");
+    }
+
     /* Start NFC thread */
     if (pthread_create(&nfc_tid, NULL, nfc_thread, NULL) != 0) {
         fprintf(stderr, "Failed to start NFC thread\n");
@@ -652,6 +942,9 @@ int main(int argc, char *argv[]) {
 
     /* Main loop */
     while (g_running) {
+        /* Process MQTT queue from main thread */
+        mqtt_process_queue();
+
         pthread_mutex_lock(&g_ui_mutex);
         
         /* Check if NFC thread requested UI refresh */
@@ -674,6 +967,7 @@ int main(int argc, char *argv[]) {
 
     /* Cleanup */
     pthread_join(nfc_tid, NULL);
+    mqtt_deinit();
     touch_deinit();
     fb_deinit();
     restore_console();
