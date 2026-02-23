@@ -317,6 +317,48 @@ LVGL Input Device (LV_INDEV_TYPE_POINTER)
 LVGL Event System (LV_EVENT_CLICKED, etc.)
 ```
 
+## MQTT Client
+
+The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operation and automatic reconnection.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Broker | tcp://192.168.188.50:1883 |
+| Client ID | nfc-terminal |
+| Protocol | MQTT 3.1.1 (async) |
+| QoS | 1 |
+| Auto-Reconnect | Enabled (1-60s backoff) |
+
+### Topics
+
+| Topic | Description | Retained |
+|-------|-------------|----------|
+| `data/<MAC>/nfc` | NFC tag events (tagId, type) | No |
+| `data/<MAC>/state` | Device state (ON/OFF) | Yes |
+
+The `<MAC>` is the device's eth0 MAC address without colons (e.g., `DCDCA284B7C8`).
+
+### Last Will and Testament (LWT)
+
+On connection, the client registers an LWT message:
+- **Topic**: `data/<MAC>/state`
+- **Payload**: `{"state":"OFF"}`
+- **Retained**: Yes
+
+This ensures the broker publishes the offline state if the device disconnects unexpectedly.
+
+### Auto-Reconnect Behavior
+
+The async MQTT client automatically handles reconnection:
+- **Min retry interval**: 1 second
+- **Max retry interval**: 60 seconds
+- **Backoff**: Exponential between min and max
+- **Reconnection trigger**: Automatic on connection loss (no manual intervention required)
+
+When connection is restored, the client automatically publishes `{"state":"ON"}` to the state topic.
+
 ## Credentials
 
 - **Username**: root

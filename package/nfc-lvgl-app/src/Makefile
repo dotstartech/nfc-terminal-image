@@ -15,8 +15,8 @@ INCLUDES = -I$(CURDIR) \
            -I$(STAGING_DIR)/usr/include \
            -DLV_CONF_INCLUDE_SIMPLE
 
-# Libraries
-LIBS = -lnfc_nci_linux -lpaho-mqtt3c -lpthread -lm
+# Libraries - use paho-mqtt3a for async API
+LIBS = -lnfc_nci_linux -lpaho-mqtt3a -lpthread -lm
 
 # Find ALL LVGL source files recursively
 LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)

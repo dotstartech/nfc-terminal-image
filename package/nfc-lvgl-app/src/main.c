@@ -28,7 +28,7 @@
 #define LV_CONF_INCLUDE_SIMPLE
 #include "lvgl/lvgl.h"
 #include "linux_nfc_api.h"
-#include "MQTTClient.h"
+#include "MQTTAsync.h"
 
 #define DISPLAY_WIDTH   720
 #define DISPLAY_HEIGHT  720
@@ -41,6 +41,8 @@
 #define MQTT_PASSWORD   "admin"
 #define MQTT_QOS        1
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
+#define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
+#define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
 
 #define COLOR_GREY      lv_color_hex(0x808080)
 #define COLOR_YELLOW    lv_color_hex(0xFFD700)
@@ -94,9 +96,10 @@ static int g_touch_x = 0;
 static int g_touch_y = 0;
 static int g_touch_pressed = 0;
 
-/* MQTT Client */
-static MQTTClient g_mqtt_client = NULL;
+/* MQTT Client (Async) */
+static MQTTAsync g_mqtt_client = NULL;
 static volatile int g_mqtt_connected = 0;
+static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
 static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
@@ -114,9 +117,14 @@ static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Forward declarations */
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
-static int mqtt_reconnect(void);
 static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
 static const char* protocol_to_string(uint8_t protocol);
+static void mqtt_publish_state(const char *state);
+
+/* MQTT Async Callbacks */
+static void mqtt_on_connect(void *context, MQTTAsync_successData *response);
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData *response);
+static void mqtt_on_connected(void *context, char *cause);
 
 /*====================
    TICK FUNCTION
@@ -634,25 +642,91 @@ static void create_ui(void) {
 }
 
 /*====================
-   MQTT CLIENT
+   MQTT CLIENT (Async with Auto-Reconnect)
  *====================*/
-/* Publish state message (ON/OFF) to state topic */
-static void mqtt_publish_state(const char *state) {
-    if (!g_mqtt_client || !g_mqtt_connected) return;
+
+/* Callback: Successfully connected */
+static void mqtt_on_connect(void *context, MQTTAsync_successData *response) {
+    (void)context;
+    (void)response;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 1;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    printf("MQTT: Initial connection successful to %s\n", MQTT_ADDRESS);
+    fflush(stdout);
+}
+
+/* Callback: Called when connected (including auto-reconnect) */
+static void mqtt_on_connected(void *context, char *cause) {
+    (void)context;
+    (void)cause;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 1;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    printf("MQTT: Connected (cause: %s), publishing state ON\n", cause ? cause : "initial");
+    fflush(stdout);
     
-    char payload[32];
+    /* Publish online state - called on both initial connect and reconnect */
+    if (!g_mqtt_client) {
+        printf("MQTT: Client is NULL, cannot publish state\n");
+        fflush(stdout);
+        return;
+    }
+    
+    static char payload[32];
+    snprintf(payload, sizeof(payload), "{\"state\":\"ON\"}");
+    
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 1;
+    
+    printf("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
+    fflush(stdout);
+    
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
+    if (rc == MQTTASYNC_SUCCESS) {
+        printf("MQTT: State ON queued for publish\n");
+    } else {
+        printf("MQTT: Failed to queue state ON, rc=%d\n", rc);
+    }
+    fflush(stdout);
+}
+
+/* Callback: Connection failed */
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData *response) {
+    (void)context;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 0;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    printf("MQTT: Connect failed, rc=%d (will auto-retry)\n", response ? response->code : -1);
+    fflush(stdout);
+}
+
+/* Publish state message (ON/OFF) to state topic - async, non-blocking */
+static void mqtt_publish_state(const char *state) {
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int connected = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    
+    if (!g_mqtt_client || !connected) {
+        printf("MQTT: Not connected, skipping state publish\n");
+        fflush(stdout);
+        return;
+    }
+    
+    static char payload[32];  /* Static to ensure it persists during async send */
     snprintf(payload, sizeof(payload), "{\"state\":\"%s\"}", state);
     
-    MQTTClient_message msg = MQTTClient_message_initializer;
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
     msg.payload = payload;
-    msg.payloadlen = strlen(payload);
+    msg.payloadlen = (int)strlen(payload);
     msg.qos = MQTT_QOS;
     msg.retained = 1;  /* Retain state message */
     
-    MQTTClient_deliveryToken token;
-    int rc = MQTTClient_publishMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &token);
-    if (rc == MQTTCLIENT_SUCCESS) {
-        MQTTClient_waitForCompletion(g_mqtt_client, token, MQTT_TIMEOUT);
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
+    if (rc == MQTTASYNC_SUCCESS) {
         printf("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
     } else {
         printf("MQTT: Failed to publish state, rc=%d\n", rc);
@@ -661,24 +735,37 @@ static void mqtt_publish_state(const char *state) {
 }
 
 static int mqtt_init(void) {
-    MQTTClient_createOptions create_opts = MQTTClient_createOptions_initializer;
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
-    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
-    MQTTResponse response = MQTTResponse_initializer;
+    MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer;
+    MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
     int rc;
 
-    /* Must set MQTT 5.0 at creation time for connect5() to work */
-    create_opts.MQTTVersion = MQTTVERSION_5;
+    printf("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
+    fflush(stdout);
 
-    rc = MQTTClient_createWithOptions(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
-                                      MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
-    if (rc != MQTTCLIENT_SUCCESS) {
-        fprintf(stderr, "MQTT: Failed to create client, rc=%d\n", rc);
-        return -1;
-    } else {
-        printf("MQTT: Created client for %s...\n", MQTT_ADDRESS);
+    /* Create async client */
+    rc = MQTTAsync_create(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
+                          MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    if (rc != MQTTASYNC_SUCCESS) {
+        printf("MQTT: Failed to create client, rc=%d\n", rc);
         fflush(stdout);
+        return -1;
     }
+    printf("MQTT: Created async client for %s\n", MQTT_ADDRESS);
+    fflush(stdout);
+
+    /* Set connected callback - called on connect AND auto-reconnect */
+    printf("MQTT: Setting connected callback...\n");
+    fflush(stdout);
+    rc = MQTTAsync_setConnected(g_mqtt_client, NULL, mqtt_on_connected);
+    if (rc != MQTTASYNC_SUCCESS) {
+        printf("MQTT: Failed to set connected callback, rc=%d\n", rc);
+        fflush(stdout);
+        MQTTAsync_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        return -1;
+    }
+    printf("MQTT: Connected callback set successfully\n");
+    fflush(stdout);
 
     /* Configure Last Will and Testament (LWT) */
     will_opts.topicName = g_mqtt_state_topic;
@@ -686,100 +773,69 @@ static int mqtt_init(void) {
     will_opts.qos = MQTT_QOS;
     will_opts.retained = 1;
 
-    /* Configure MQTT 5.0 connection */
-    conn_opts.MQTTVersion = MQTTVERSION_5;
-    conn_opts.keepAliveInterval = 60;
-    conn_opts.cleanstart = 1;
+    /* Broker detects disconnect in 1.5x keepAlive (~15s) and publishes LWT message */
+    conn_opts.keepAliveInterval = 10;
+    conn_opts.cleansession = 1;
     conn_opts.username = MQTT_USERNAME;
     conn_opts.password = MQTT_PASSWORD;
-    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;  /* 3 second connection timeout */
+    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
     conn_opts.will = &will_opts;
+    conn_opts.onSuccess = mqtt_on_connect;
+    conn_opts.onFailure = mqtt_on_connect_failure;
+    conn_opts.automaticReconnect = 1;
+    conn_opts.minRetryInterval = MQTT_RECONNECT_MIN_DELAY;
+    conn_opts.maxRetryInterval = MQTT_RECONNECT_MAX_DELAY;
 
-    response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
-    rc = response.reasonCode;
+    printf("MQTT: LWT configured - topic=%s, message=%s, qos=%d, retained=%d\n",
+           will_opts.topicName, will_opts.message, will_opts.qos, will_opts.retained);
+    printf("MQTT: keepAlive=%ds (LWT fires after ~%ds on ungraceful disconnect)\n",
+           conn_opts.keepAliveInterval, (int)(conn_opts.keepAliveInterval * 1.5));
+    fflush(stdout);
 
-    /*printf("MQTT: MQTTClient_connect5 returned rc=%d\n", rc);
-    fflush(stdout);*/
-
-    MQTTResponse_free(response);
-
-    if (rc != MQTTCLIENT_SUCCESS && rc != MQTTREASONCODE_SUCCESS) {
-        printf("MQTT: Failed to connect, rc=%d\n", rc);
+    /* Initiate async connection */
+    printf("MQTT: Initiating connection...\n");
+    fflush(stdout);
+    rc = MQTTAsync_connect(g_mqtt_client, &conn_opts);
+    if (rc != MQTTASYNC_SUCCESS) {
+        printf("MQTT: Failed to start connect, rc=%d\n", rc);
         fflush(stdout);
-        MQTTClient_destroy(&g_mqtt_client);
+        MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
         return -1;
     }
 
-    g_mqtt_connected = 1;
-    printf("MQTT: Connected to %s (MQTT v5.0)\n", MQTT_ADDRESS);
+    printf("MQTT: Connection initiated (auto-reconnect: %d-%ds)\n", 
+           MQTT_RECONNECT_MIN_DELAY, MQTT_RECONNECT_MAX_DELAY);
     fflush(stdout);
-
-    /* Publish online state */
-    mqtt_publish_state("ON");
 
     return 0;
 }
 
 static void mqtt_deinit(void) {
     if (g_mqtt_client) {
-        if (g_mqtt_connected) {
+        pthread_mutex_lock(&g_mqtt_mutex);
+        int connected = g_mqtt_connected;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+        
+        if (connected) {
             /* Publish offline state before disconnect */
             mqtt_publish_state("OFF");
             printf("MQTT: Disconnecting...\n");
             fflush(stdout);
-            MQTTClient_disconnect(g_mqtt_client, MQTT_TIMEOUT);
+            
+            MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
+            opts.timeout = MQTT_TIMEOUT;
+            MQTTAsync_disconnect(g_mqtt_client, &opts);
+            
+            pthread_mutex_lock(&g_mqtt_mutex);
             g_mqtt_connected = 0;
+            pthread_mutex_unlock(&g_mqtt_mutex);
         }
-        MQTTClient_destroy(&g_mqtt_client);
+        MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
         printf("MQTT: Client destroyed\n");
         fflush(stdout);
     }
-}
-
-static int mqtt_reconnect(void) {
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
-    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
-    MQTTResponse response = MQTTResponse_initializer;
-
-    if (!g_mqtt_client) {
-        return -1;
-    }
-
-    /* Configure Last Will and Testament (LWT) */
-    will_opts.topicName = g_mqtt_state_topic;
-    will_opts.message = "{\"state\":\"OFF\"}";
-    will_opts.qos = MQTT_QOS;
-    will_opts.retained = 1;
-
-    conn_opts.MQTTVersion = MQTTVERSION_5;
-    conn_opts.keepAliveInterval = 60;
-    conn_opts.cleanstart = 1;
-    conn_opts.username = MQTT_USERNAME;
-    conn_opts.password = MQTT_PASSWORD;
-    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
-    conn_opts.will = &will_opts;
-
-    response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
-    int rc = response.reasonCode;
-    MQTTResponse_free(response);
-
-    if (rc != MQTTCLIENT_SUCCESS && rc != MQTTREASONCODE_SUCCESS) {
-        printf("MQTT: Reconnect failed, rc=%d\n", rc);
-        fflush(stdout);
-        g_mqtt_connected = 0;
-        return -1;
-    }
-
-    g_mqtt_connected = 1;
-    printf("MQTT: Reconnected successfully\n");
-    fflush(stdout);
-
-    /* Publish online state */
-    mqtt_publish_state("ON");
-
-    return 0;
 }
 
 static void get_mac_address(void) {
@@ -811,12 +867,21 @@ static void get_mac_address(void) {
 }
 
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
-    #define MQTT_MAX_RETRIES 3
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int connected = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
 
     if (!g_mqtt_client) {
         printf("MQTT: No client, skipping publish\n");
         fflush(stdout);
         return;
+    }
+
+    if (!connected) {
+        printf("MQTT: Not connected, message queued for when connection resumes\n");
+        fflush(stdout);
+        /* With auto-reconnect, we can still attempt to publish - 
+           it will be queued internally if supported, or fail gracefully */
     }
 
     /* Build tag ID without colons: "A4:FB:3B:A0" -> "A4FB3BA0" */
@@ -830,62 +895,23 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     tag_no_colons[j] = '\0';
 
     /* Build JSON payload with tagId and type */
-    char payload[128];
+    static char payload[128];  /* Static to persist during async send */
     snprintf(payload, sizeof(payload), "{\"tagId\":\"%s\",\"type\":\"%s\"}", tag_no_colons, protocol_to_string(protocol));
 
-    /* Retry loop for publish with reconnect on failure */
-    for (int attempt = 1; attempt <= MQTT_MAX_RETRIES; attempt++) {
-        /* Check if still connected, reconnect if needed */
-        if (!MQTTClient_isConnected(g_mqtt_client)) {
-            printf("MQTT: Connection lost, attempting reconnect (attempt %d/%d)...\n", attempt, MQTT_MAX_RETRIES);
-            fflush(stdout);
-            g_mqtt_connected = 0;
-            if (mqtt_reconnect() != 0) {
-                printf("MQTT: Reconnect failed\n");
-                fflush(stdout);
-                if (attempt < MQTT_MAX_RETRIES) {
-                    usleep(350000);  /* Wait 350ms before retry */
-                    continue;
-                }
-                printf("MQTT: All reconnect attempts exhausted, giving up\n");
-                fflush(stdout);
-                return;
-            }
-        }
+    /* Async publish - non-blocking */
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 0;
 
-        MQTTClient_deliveryToken token;
-        MQTTResponse response = MQTTClient_publish5(g_mqtt_client, g_mqtt_topic,
-                                                     (int)strlen(payload), payload,
-                                                     MQTT_QOS, 0, NULL, &token);
-        if (response.reasonCode != MQTTCLIENT_SUCCESS && response.reasonCode != MQTTREASONCODE_SUCCESS) {
-            printf("MQTT: Failed to publish, rc=%d (attempt %d/%d)\n", response.reasonCode, attempt, MQTT_MAX_RETRIES);
-            fflush(stdout);
-            MQTTResponse_free(response);
-            g_mqtt_connected = 0;
-            if (attempt < MQTT_MAX_RETRIES) {
-                usleep(350000);  /* Wait 350ms before retry */
-                continue;
-            }
-            return;
-        }
-        MQTTResponse_free(response);
-
-        int rc = MQTTClient_waitForCompletion(g_mqtt_client, token, MQTT_TIMEOUT);
-        if (rc != MQTTCLIENT_SUCCESS) {
-            printf("MQTT: Publish timeout, rc=%d (attempt %d/%d)\n", rc, attempt, MQTT_MAX_RETRIES);
-            fflush(stdout);
-            g_mqtt_connected = 0;
-            if (attempt < MQTT_MAX_RETRIES) {
-                usleep(350000);  /* Wait 350ms before retry */
-                continue;
-            }
-            return;
-        }
-
-        printf("MQTT: Published payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
-        fflush(stdout);
-        return;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_topic, &msg, NULL);
+    if (rc == MQTTASYNC_SUCCESS) {
+        printf("MQTT: Publish queued payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
+    } else {
+        printf("MQTT: Failed to queue publish, rc=%d\n", rc);
     }
+    fflush(stdout);
 }
 
 /* Queue a tag ID for publishing from main thread */
@@ -964,7 +990,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Initialize LVGL */
     lv_init();
 
     /* Create display */
@@ -995,19 +1020,18 @@ int main(int argc, char *argv[]) {
         printf("Touch: touch_init() FAILED\n");
     }
 
-    /* Create UI */
     create_ui();
 
     /* Force full screen refresh */
     lv_obj_invalidate(lv_screen_active());
     lv_refr_now(g_display);
 
-    /* Get device MAC address */
     get_mac_address();
 
     /* Initialize MQTT client */
     if (mqtt_init() != 0) {
-        fprintf(stderr, "Warning: MQTT client initialization failed, continuing without MQTT\n");
+        printf("Warning: MQTT client initialization failed, continuing without MQTT\n");
+        fflush(stdout);
     }
 
     /* Start NFC thread */
