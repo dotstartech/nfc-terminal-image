@@ -121,9 +121,9 @@ static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
 static const char* protocol_to_string(uint8_t protocol);
 static void mqtt_publish_state(const char *state);
 
-/* MQTT Async Callbacks */
-static void mqtt_on_connect(void *context, MQTTAsync_successData *response);
-static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData *response);
+/* MQTT Async Callbacks (MQTT v5.0) */
+static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response);
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response);
 static void mqtt_on_connected(void *context, char *cause);
 
 /*====================
@@ -645,14 +645,14 @@ static void create_ui(void) {
    MQTT CLIENT (Async with Auto-Reconnect)
  *====================*/
 
-/* Callback: Successfully connected */
-static void mqtt_on_connect(void *context, MQTTAsync_successData *response) {
+/* Callback: Successfully connected (MQTT v5.0) */
+static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response) {
     (void)context;
     (void)response;
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    printf("MQTT: Initial connection successful to %s\n", MQTT_ADDRESS);
+    printf("MQTT: Initial connection successful to %s (MQTT v5.0)\n", MQTT_ADDRESS);
     fflush(stdout);
 }
 
@@ -694,8 +694,8 @@ static void mqtt_on_connected(void *context, char *cause) {
     fflush(stdout);
 }
 
-/* Callback: Connection failed */
-static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData *response) {
+/* Callback: Connection failed (MQTT v5.0) */
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response) {
     (void)context;
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 0;
@@ -735,22 +735,24 @@ static void mqtt_publish_state(const char *state) {
 }
 
 static int mqtt_init(void) {
-    MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer;
+    MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer5;
     MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
+    MQTTAsync_createOptions create_opts = MQTTAsync_createOptions_initializer;
     int rc;
 
     printf("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
     fflush(stdout);
 
-    /* Create async client */
-    rc = MQTTAsync_create(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
-                          MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    /* Create async client with MQTT v5.0 */
+    create_opts.MQTTVersion = MQTTVERSION_5;
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
+                          MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
         printf("MQTT: Failed to create client, rc=%d\n", rc);
         fflush(stdout);
         return -1;
     }
-    printf("MQTT: Created async client for %s\n", MQTT_ADDRESS);
+    printf("MQTT: Created async client for %s (MQTT v5.0)\n", MQTT_ADDRESS);
     fflush(stdout);
 
     /* Set connected callback - called on connect AND auto-reconnect */
@@ -774,14 +776,15 @@ static int mqtt_init(void) {
     will_opts.retained = 1;
 
     /* Broker detects disconnect in 1.5x keepAlive (~15s) and publishes LWT message */
+    conn_opts.MQTTVersion = MQTTVERSION_5;
     conn_opts.keepAliveInterval = 10;
-    conn_opts.cleansession = 1;
+    conn_opts.cleanstart = 1;  /* MQTT v5.0 uses cleanstart instead of cleansession */
     conn_opts.username = MQTT_USERNAME;
     conn_opts.password = MQTT_PASSWORD;
     conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
     conn_opts.will = &will_opts;
-    conn_opts.onSuccess = mqtt_on_connect;
-    conn_opts.onFailure = mqtt_on_connect_failure;
+    conn_opts.onSuccess5 = mqtt_on_connect;
+    conn_opts.onFailure5 = mqtt_on_connect_failure;
     conn_opts.automaticReconnect = 1;
     conn_opts.minRetryInterval = MQTT_RECONNECT_MIN_DELAY;
     conn_opts.maxRetryInterval = MQTT_RECONNECT_MAX_DELAY;

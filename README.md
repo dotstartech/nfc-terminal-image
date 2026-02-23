@@ -327,7 +327,7 @@ The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operatio
 |-----------|-------|
 | Broker | tcp://192.168.188.50:1883 |
 | Client ID | nfc-terminal |
-| Protocol | MQTT 3.1.1 (async) |
+| Protocol | MQTT 5.0 (async) |
 | QoS | 1 |
 | Auto-Reconnect | Enabled (1-60s backoff) |
 
