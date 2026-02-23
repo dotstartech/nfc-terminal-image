@@ -30,15 +30,11 @@
 #include "linux_nfc_api.h"
 #include "MQTTClient.h"
 
-/*====================
-   CONSTANTS
- *====================*/
 #define DISPLAY_WIDTH   720
 #define DISPLAY_HEIGHT  720
 #define FB_DEVICE       "/dev/fb0"
 #define TOUCH_DEVICE    "/dev/input/event4"
 
-/* MQTT Configuration */
 #define MQTT_ADDRESS    "tcp://192.168.188.50:1883"
 #define MQTT_CLIENT_ID  "nfc-terminal"
 #define MQTT_USERNAME   "admin"
@@ -46,7 +42,6 @@
 #define MQTT_QOS        1
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 
-/* Colors */
 #define COLOR_GREY      lv_color_hex(0x808080)
 #define COLOR_YELLOW    lv_color_hex(0xFFD700)
 #define COLOR_CHECKED   lv_color_hex(0x32CD32)
@@ -98,27 +93,30 @@ static lv_indev_t *g_touch_indev = NULL;
 static int g_touch_x = 0;
 static int g_touch_y = 0;
 static int g_touch_pressed = 0;
-static int g_touch_cb_count = 0;  /* Debug counter */
-static int g_touch_init_ok = 0;   /* Debug: touch init status */
-static int g_indev_ok = 0;        /* Debug: indev create status */
 
 /* MQTT Client */
 static MQTTClient g_mqtt_client = NULL;
 static volatile int g_mqtt_connected = 0;
 static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
+static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
 
-/* MQTT Message Queue - simple ring buffer for tag IDs to publish */
+/* MQTT Message Queue - simple ring buffer for tag events to publish */
 #define MQTT_QUEUE_SIZE 8
-static char g_mqtt_queue[MQTT_QUEUE_SIZE][64];
+typedef struct {
+    char tag_id[64];
+    uint8_t protocol;  /* NFC protocol type: T1T, T2T, T3T, etc. */
+} mqtt_queue_entry_t;
+static mqtt_queue_entry_t g_mqtt_queue[MQTT_QUEUE_SIZE];
 static volatile int g_mqtt_queue_head = 0;
 static volatile int g_mqtt_queue_tail = 0;
 static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Forward declarations */
-static void mqtt_publish_tag_event(const char *tag_id);
+static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
 static int mqtt_reconnect(void);
-static void mqtt_queue_tag(const char *tag_id);
+static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
+static const char* protocol_to_string(uint8_t protocol);
 
 /*====================
    TICK FUNCTION
@@ -151,7 +149,9 @@ static void clear_console(void) {
         FILE *dbg = fopen("/tmp/freopen-failed.log", "w");
         if (dbg) { fprintf(dbg, "freopen stdout failed\n"); fclose(dbg); }
     }
-    freopen("/tmp/nfc-lvgl-app.log", "a", stderr);
+    if (!freopen("/tmp/nfc-lvgl-app.log", "a", stderr)) {
+        /* Ignore - stderr redirect is optional */
+    }
 }
 
 static void restore_console(void) {
@@ -271,13 +271,18 @@ static int g_touch_y_min = 0, g_touch_y_max = 720;
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     (void)indev;
     struct input_event ev;
-    
-    g_touch_cb_count++;  /* Debug: count callback invocations */
 
     /* Read all pending events */
     while (g_touch_fd >= 0) {
         ssize_t n = read(g_touch_fd, &ev, sizeof(ev));
-        if (n != sizeof(ev)) break;
+        
+        if (n < 0) {
+            /* EAGAIN/EWOULDBLOCK means no more events available */
+            break;
+        }
+        if (n != sizeof(ev)) {
+            break;
+        }
 
         if (ev.type == EV_ABS) {
             switch (ev.code) {
@@ -373,6 +378,7 @@ static void update_button_color(role_t *role) {
     }
 
     lv_obj_set_style_bg_color(role->btn, color, LV_PART_MAIN);
+    lv_obj_invalidate(role->btn);  /* Force redraw of this button */
 }
 
 static void update_status_label(void) {
@@ -407,20 +413,41 @@ static void role_btn_event_cb(lv_event_t *e) {
     /* Note: No mutex needed here - we're called from lv_timer_handler() 
        which already holds the mutex via the main loop */
 
+    printf("Button clicked: state %d -> ", role->state);
+    
     if (role->state == ROLE_STATE_UNSELECTED) {
         role->state = ROLE_STATE_SELECTED;
     } else if (role->state == ROLE_STATE_SELECTED) {
         role->state = ROLE_STATE_UNSELECTED;
     }
     /* CHECKED_IN state: button click does nothing (need same tag to check out) */
+    
+    printf("%d\n", role->state);
+    fflush(stdout);
 
     update_button_color(role);
     update_status_label();
+    
+    /* Force immediate display refresh */
+    lv_refr_now(g_display);
 }
 
 /*====================
    NFC TAG HANDLING
  *====================*/
+/* Convert NFC protocol value to human-readable string */
+static const char* protocol_to_string(uint8_t protocol) {
+    switch (protocol) {
+        case 0x01: return "T1T";
+        case 0x02: return "T2T";
+        case 0x03: return "T3T";
+        case 0x04: return "ISO-DEP";
+        case 0x06: return "ISO15693";
+        case 0x80: return "MIFARE";
+        default:   return "UNKNOWN";
+    }
+}
+
 static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
     size_t pos = 0;
     for (unsigned int i = 0; i < tag->uid_length && pos < buflen - 3; i++) {
@@ -433,10 +460,10 @@ static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
     buf[pos] = '\0';
 }
 
-static void process_tag_discovery(const char *tag_id) {
+static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
     int same_tag = (strcmp(tag_id, g_last_tag_id) == 0);
 
-    printf("NFC: process_tag_discovery tag=%s, same=%d\n", tag_id, same_tag);
+    printf("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
     fflush(stdout);
 
     /* Process all roles */
@@ -459,7 +486,7 @@ static void process_tag_discovery(const char *tag_id) {
     strncpy(g_last_tag_id, tag_id, sizeof(g_last_tag_id) - 1);
 
     /* Queue tag event for MQTT publish from main thread */
-    mqtt_queue_tag(tag_id);
+    mqtt_queue_tag(tag_id, protocol);
 
     /* Signal main loop to refresh UI */
     g_ui_needs_refresh = 1;
@@ -474,9 +501,9 @@ static void on_tag_arrival(nfc_tag_info_t *tag_info) {
     if (!tag_info) return;
     char tag_id[64];
     format_tag_id(tag_info, tag_id, sizeof(tag_id));
-    printf("NFC: Tag detected: %s (uid_len=%u)\n", tag_id, tag_info->uid_length);
+    printf("NFC: Tag detected: %s (uid_len=%u, protocol=0x%02X)\n", tag_id, tag_info->uid_length, tag_info->protocol);
     fflush(stdout);
-    process_tag_discovery(tag_id);
+    process_tag_discovery(tag_id, tag_info->protocol);
 }
 
 static void on_tag_departure(void) {
@@ -586,11 +613,15 @@ static void create_ui(void) {
         lv_obj_set_style_bg_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_radius(g_roles[i].btn, 8, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
+        lv_obj_set_style_border_width(g_roles[i].btn, 4, LV_PART_MAIN);
+        lv_obj_set_style_border_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_add_event_cb(g_roles[i].btn, role_btn_event_cb, LV_EVENT_CLICKED, &g_roles[i]);
 
         g_roles[i].label = lv_label_create(g_roles[i].btn);
         lv_label_set_text(g_roles[i].label, g_role_names[i]);
         lv_obj_set_style_text_font(g_roles[i].label, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g_roles[i].label, COLOR_BG, LV_PART_MAIN);
         lv_obj_center(g_roles[i].label);
     }
 
@@ -605,9 +636,34 @@ static void create_ui(void) {
 /*====================
    MQTT CLIENT
  *====================*/
+/* Publish state message (ON/OFF) to state topic */
+static void mqtt_publish_state(const char *state) {
+    if (!g_mqtt_client || !g_mqtt_connected) return;
+    
+    char payload[32];
+    snprintf(payload, sizeof(payload), "{\"state\":\"%s\"}", state);
+    
+    MQTTClient_message msg = MQTTClient_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 1;  /* Retain state message */
+    
+    MQTTClient_deliveryToken token;
+    int rc = MQTTClient_publishMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &token);
+    if (rc == MQTTCLIENT_SUCCESS) {
+        MQTTClient_waitForCompletion(g_mqtt_client, token, MQTT_TIMEOUT);
+        printf("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
+    } else {
+        printf("MQTT: Failed to publish state, rc=%d\n", rc);
+    }
+    fflush(stdout);
+}
+
 static int mqtt_init(void) {
     MQTTClient_createOptions create_opts = MQTTClient_createOptions_initializer;
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
+    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
     MQTTResponse response = MQTTResponse_initializer;
     int rc;
 
@@ -624,6 +680,12 @@ static int mqtt_init(void) {
         fflush(stdout);
     }
 
+    /* Configure Last Will and Testament (LWT) */
+    will_opts.topicName = g_mqtt_state_topic;
+    will_opts.message = "{\"state\":\"OFF\"}";
+    will_opts.qos = MQTT_QOS;
+    will_opts.retained = 1;
+
     /* Configure MQTT 5.0 connection */
     conn_opts.MQTTVersion = MQTTVERSION_5;
     conn_opts.keepAliveInterval = 60;
@@ -631,6 +693,7 @@ static int mqtt_init(void) {
     conn_opts.username = MQTT_USERNAME;
     conn_opts.password = MQTT_PASSWORD;
     conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;  /* 3 second connection timeout */
+    conn_opts.will = &will_opts;
 
     response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
     rc = response.reasonCode;
@@ -652,12 +715,17 @@ static int mqtt_init(void) {
     printf("MQTT: Connected to %s (MQTT v5.0)\n", MQTT_ADDRESS);
     fflush(stdout);
 
+    /* Publish online state */
+    mqtt_publish_state("ON");
+
     return 0;
 }
 
 static void mqtt_deinit(void) {
     if (g_mqtt_client) {
         if (g_mqtt_connected) {
+            /* Publish offline state before disconnect */
+            mqtt_publish_state("OFF");
             printf("MQTT: Disconnecting...\n");
             fflush(stdout);
             MQTTClient_disconnect(g_mqtt_client, MQTT_TIMEOUT);
@@ -672,11 +740,18 @@ static void mqtt_deinit(void) {
 
 static int mqtt_reconnect(void) {
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer5;
+    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
     MQTTResponse response = MQTTResponse_initializer;
 
     if (!g_mqtt_client) {
         return -1;
     }
+
+    /* Configure Last Will and Testament (LWT) */
+    will_opts.topicName = g_mqtt_state_topic;
+    will_opts.message = "{\"state\":\"OFF\"}";
+    will_opts.qos = MQTT_QOS;
+    will_opts.retained = 1;
 
     conn_opts.MQTTVersion = MQTTVERSION_5;
     conn_opts.keepAliveInterval = 60;
@@ -684,6 +759,7 @@ static int mqtt_reconnect(void) {
     conn_opts.username = MQTT_USERNAME;
     conn_opts.password = MQTT_PASSWORD;
     conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
+    conn_opts.will = &will_opts;
 
     response = MQTTClient_connect5(g_mqtt_client, &conn_opts, NULL, NULL);
     int rc = response.reasonCode;
@@ -699,43 +775,42 @@ static int mqtt_reconnect(void) {
     g_mqtt_connected = 1;
     printf("MQTT: Reconnected successfully\n");
     fflush(stdout);
+
+    /* Publish online state */
+    mqtt_publish_state("ON");
+
     return 0;
 }
 
 static void get_mac_address(void) {
+    unsigned char mac[6] = {0, 0, 0, 0, 0, 0};
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        snprintf(g_device_mac, sizeof(g_device_mac), "00:00:00:00:00:00");
-        return;
-    }
+    
+    if (sock >= 0) {
+        struct ifreq ifr;
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
 
-    struct ifreq ifr;
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
-
-    if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
+        if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+            memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+        }
         close(sock);
-        snprintf(g_device_mac, sizeof(g_device_mac), "00:00:00:00:00:00");
-        return;
     }
-    close(sock);
 
-    unsigned char *mac = (unsigned char *)ifr.ifr_hwaddr.sa_data;
     snprintf(g_device_mac, sizeof(g_device_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    /* Build MQTT topic: data/<MAC_NO_COLONS>/nfc */
+    /* Build MQTT topics: data/<MAC_NO_COLONS>/nfc and data/<MAC_NO_COLONS>/state */
     snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%02X%02X%02X%02X%02X%02X/nfc",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    /*
-    printf("Device MAC: %s\n", g_device_mac);
-    printf("MQTT Topic: %s\n", g_mqtt_topic);
+    snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%02X%02X%02X%02X%02X%02X/state",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    printf("MQTT: State topic: %s\n", g_mqtt_state_topic);
     fflush(stdout);
-    */
 }
 
-static void mqtt_publish_tag_event(const char *tag_id) {
+static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     #define MQTT_MAX_RETRIES 3
 
     if (!g_mqtt_client) {
@@ -754,9 +829,9 @@ static void mqtt_publish_tag_event(const char *tag_id) {
     }
     tag_no_colons[j] = '\0';
 
-    /* Build JSON payload with tagId only */
+    /* Build JSON payload with tagId and type */
     char payload[128];
-    snprintf(payload, sizeof(payload), "{\"tagId\":\"%s\"}", tag_no_colons);
+    snprintf(payload, sizeof(payload), "{\"tagId\":\"%s\",\"type\":\"%s\"}", tag_no_colons, protocol_to_string(protocol));
 
     /* Retry loop for publish with reconnect on failure */
     for (int attempt = 1; attempt <= MQTT_MAX_RETRIES; attempt++) {
@@ -807,20 +882,20 @@ static void mqtt_publish_tag_event(const char *tag_id) {
             return;
         }
 
-        printf("MQTT: Published to topic='%s' payload='%s'\n", g_mqtt_topic, payload);
+        printf("MQTT: Published payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
         fflush(stdout);
         return;
     }
 }
 
 /* Queue a tag ID for publishing from main thread */
-static void mqtt_queue_tag(const char *tag_id) {
+static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
     pthread_mutex_lock(&g_mqtt_queue_mutex);
 
     /* Deduplicate: don't queue if same as last queued tag */
     if (g_mqtt_queue_head != g_mqtt_queue_tail) {
         int last_idx = (g_mqtt_queue_head - 1 + MQTT_QUEUE_SIZE) % MQTT_QUEUE_SIZE;
-        if (strcmp(g_mqtt_queue[last_idx], tag_id) == 0) {
+        if (strcmp(g_mqtt_queue[last_idx].tag_id, tag_id) == 0) {
             pthread_mutex_unlock(&g_mqtt_queue_mutex);
             return;  /* Skip duplicate */
         }
@@ -828,8 +903,9 @@ static void mqtt_queue_tag(const char *tag_id) {
 
     int next_head = (g_mqtt_queue_head + 1) % MQTT_QUEUE_SIZE;
     if (next_head != g_mqtt_queue_tail) {
-        strncpy(g_mqtt_queue[g_mqtt_queue_head], tag_id, sizeof(g_mqtt_queue[0]) - 1);
-        g_mqtt_queue[g_mqtt_queue_head][sizeof(g_mqtt_queue[0]) - 1] = '\0';
+        strncpy(g_mqtt_queue[g_mqtt_queue_head].tag_id, tag_id, sizeof(g_mqtt_queue[0].tag_id) - 1);
+        g_mqtt_queue[g_mqtt_queue_head].tag_id[sizeof(g_mqtt_queue[0].tag_id) - 1] = '\0';
+        g_mqtt_queue[g_mqtt_queue_head].protocol = protocol;
         g_mqtt_queue_head = next_head;
     } else {
         printf("MQTT: Queue full, dropping message\n");
@@ -841,18 +917,20 @@ static void mqtt_queue_tag(const char *tag_id) {
 /* Process queued MQTT messages - call from main thread only */
 static void mqtt_process_queue(void) {
     char tag_id[64];
+    uint8_t protocol;
     while (1) {
         pthread_mutex_lock(&g_mqtt_queue_mutex);
         if (g_mqtt_queue_head == g_mqtt_queue_tail) {
             pthread_mutex_unlock(&g_mqtt_queue_mutex);
             break;
         }
-        strncpy(tag_id, g_mqtt_queue[g_mqtt_queue_tail], sizeof(tag_id) - 1);
+        strncpy(tag_id, g_mqtt_queue[g_mqtt_queue_tail].tag_id, sizeof(tag_id) - 1);
         tag_id[sizeof(tag_id) - 1] = '\0';
+        protocol = g_mqtt_queue[g_mqtt_queue_tail].protocol;
         g_mqtt_queue_tail = (g_mqtt_queue_tail + 1) % MQTT_QUEUE_SIZE;
         pthread_mutex_unlock(&g_mqtt_queue_mutex);
         
-        mqtt_publish_tag_event(tag_id);
+        mqtt_publish_tag_event(tag_id, protocol);
     }
 }
 
@@ -906,14 +984,15 @@ int main(int argc, char *argv[]) {
 
     /* Initialize touch input */
     if (touch_init() == 0) {
-        g_touch_init_ok = 1;
         g_touch_indev = lv_indev_create();
         if (g_touch_indev) {
-            g_indev_ok = 1;
             lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
             lv_indev_set_read_cb(g_touch_indev, touch_read_cb);
             lv_indev_set_display(g_touch_indev, g_display);  /* Associate with display */
+            printf("Touch input initialized\n");
         }
+    } else {
+        printf("Touch: touch_init() FAILED\n");
     }
 
     /* Create UI */
@@ -958,6 +1037,11 @@ int main(int argc, char *argv[]) {
             lv_refr_now(g_display);  /* Force immediate refresh */
             printf("UI: Refreshed from main loop\n");
             fflush(stdout);
+        }
+        
+        /* Explicitly poll touch input */
+        if (g_touch_indev) {
+            lv_indev_read(g_touch_indev);
         }
         
         lv_timer_handler();

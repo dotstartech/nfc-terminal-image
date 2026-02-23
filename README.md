@@ -247,6 +247,67 @@ The `nfcDemoApp poll` command starts automatically at boot via the init script `
 
 Logs are written to `/var/log/nfc.log`.
 
+## Touch Integration (FT6336U)
+
+The touchscreen uses a FocalTech FT6336U controller connected via I2C0 at address 0x48. The kernel driver `edt_ft5x06` handles the hardware, exposing touch events through the Linux input subsystem.
+
+### Hardware Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Controller | FocalTech FT6336U |
+| I2C Bus | I2C0 (i2c_vc) |
+| I2C Address | 0x48 |
+| Interrupt GPIO | GPIO25 (falling edge) |
+| Reset GPIO | GPIO24 (active-low) |
+| Kernel Driver | edt_ft5x06 |
+| Input Device | /dev/input/event4 |
+
+### Device Tree Overlay
+
+The touch overlay (`ft6336u-gx040hd.dtbo`) configures:
+- I2C address and compatible string (`focaltech,ft6236`)
+- Interrupt on GPIO25, falling edge trigger
+- Reset control on GPIO24
+
+### LVGL Application Integration
+
+Key implementation details for integrating with LVGL v9.x:
+
+1. **Input Device Setup**: Open `/dev/input/event4` with `O_RDONLY | O_NONBLOCK`
+
+2. **Multitouch Protocol B**: The FT6336U uses Linux MT Protocol B with slots:
+   - `ABS_MT_POSITION_X` / `ABS_MT_POSITION_Y` for coordinates
+   - `ABS_MT_TRACKING_ID >= 0` indicates touch down, `-1` indicates touch up
+   - Also sends `BTN_TOUCH` key events
+
+3. **Coordinate Scaling**: Query touch range using `EVIOCGABS(ABS_MT_POSITION_X/Y)` and scale to display resolution (720x720)
+
+4. **Display Refresh**: After UI changes from touch events, call:
+   - `lv_obj_invalidate(obj)` to mark objects for redraw
+   - `lv_refr_now(display)` to force immediate refresh
+
+### Touch Event Flow
+
+```
+FT6336U Hardware
+      │ (I2C0)
+      ▼
+edt_ft5x06 Kernel Driver
+      │ (GPIO25 interrupt)
+      ▼
+Input Subsystem (/dev/input/event4)
+      │ (read() with O_NONBLOCK)
+      ▼
+LVGL touch_read_cb()
+      │ (parse EV_ABS events)
+      ▼
+LVGL Input Device (LV_INDEV_TYPE_POINTER)
+      │
+      ▼
+LVGL Event System (LV_EVENT_CLICKED, etc.)
+```
+
 ## Credentials
 
 - **Username**: root
