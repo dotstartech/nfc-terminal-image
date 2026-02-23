@@ -81,7 +81,18 @@ case "${1:-build}" in
         ;;
 
     build)
+        # Parse --demo-app flag
+        DEMO_APP=false
+        if [[ "$2" == "--demo-app" ]]; then
+            DEMO_APP=true
+        fi
+
         print_status "Building NFC Terminal image..."
+        if $DEMO_APP; then
+            print_status "Demo app (nfc-lvgl-app) will be included."
+        else
+            print_status "Demo app (nfc-lvgl-app) will NOT be included."
+        fi
         print_warning "This may take 30-60 minutes on first build."
         
         # Ensure configured
@@ -89,6 +100,23 @@ case "${1:-build}" in
             print_status "No configuration found, running config first..."
             make BR2_EXTERNAL="${EXTERNAL_DIR}" nfc_terminal_cm4_defconfig
         fi
+
+        # Enable/disable nfc-lvgl-app based on --demo-app flag
+        if $DEMO_APP; then
+            # Enable the demo app
+            if grep -q "# BR2_PACKAGE_NFC_LVGL_APP is not set" .config; then
+                sed -i 's/# BR2_PACKAGE_NFC_LVGL_APP is not set/BR2_PACKAGE_NFC_LVGL_APP=y/' .config
+            elif ! grep -q "BR2_PACKAGE_NFC_LVGL_APP" .config; then
+                echo "BR2_PACKAGE_NFC_LVGL_APP=y" >> .config
+            fi
+        else
+            # Disable the demo app
+            if grep -q "BR2_PACKAGE_NFC_LVGL_APP=y" .config; then
+                sed -i 's/BR2_PACKAGE_NFC_LVGL_APP=y/# BR2_PACKAGE_NFC_LVGL_APP is not set/' .config
+            fi
+        fi
+        # Update config to resolve dependencies
+        make olddefconfig
         
         # Build with parallel jobs
         JOBS=$(nproc)
@@ -176,7 +204,7 @@ case "${1:-build}" in
         echo "  config          - Configure buildroot with NFC Terminal defconfig"
         echo "  menuconfig      - Open Buildroot configuration menu"
         echo "  linux-menuconfig - Open Linux kernel configuration menu"
-        echo "  build           - Build the complete image (default)"
+        echo "  build [--demo-app] - Build the complete image (default, without demo app)"
         echo "  clean           - Clean build artifacts"
         echo "  distclean       - Remove all build artifacts and configuration"
         echo "  rebuild-kernel  - Rebuild only the kernel"

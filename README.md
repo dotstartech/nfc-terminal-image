@@ -73,13 +73,22 @@ git clone https://github.com/buildroot/buildroot.git --branch 2024.02.x --depth 
 
 This configures Buildroot with the external tree and builds everything.
 
-3. **Optional: Customize configuration**:
+3. **Build script commands**:
 
-```bash
-./build.sh menuconfig        # Main buildroot config
-./build.sh linux-menuconfig  # Kernel config
-./build.sh savedefconfig     # Save changes
-```
+| Command | Description |
+|---------|-------------|
+| `./build.sh` | Build the complete image (default, without demo app) |
+| `./build.sh build --demo-app` | Build the image with nfc-lvgl-app demo included |
+| `./build.sh config` | Apply NFC Terminal defconfig without building |
+| `./build.sh menuconfig` | Open Buildroot interactive configuration menu |
+| `./build.sh linux-menuconfig` | Open Linux kernel configuration menu |
+| `./build.sh savedefconfig` | Save current config back to defconfig file |
+| `./build.sh clean` | Remove build artifacts (keeps config) |
+| `./build.sh distclean` | Remove ALL build artifacts and configuration |
+| `./build.sh rebuild-kernel` | Rebuild only the Linux kernel |
+| `./build.sh rebuild-driver` | Rebuild only the ST7703 display driver |
+| `./build.sh flash /dev/sdX` | Flash built image to SD card or eMMC device |
+| `./build.sh rpiboot` | Start rpiboot for CM4 eMMC programming mode |
 
 4. **Output files** will be in `buildroot/output/images/`:
    - `nfc-terminal.img` - Complete bootable image
