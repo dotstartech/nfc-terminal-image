@@ -44,12 +44,13 @@
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
 
-#define COLOR_GREY      lv_color_hex(0x808080)
-#define COLOR_YELLOW    lv_color_hex(0xFFD700)
-#define COLOR_CHECKED   lv_color_hex(0x32CD32)
-#define COLOR_BG        lv_color_hex(0x1a1a2e)
-#define COLOR_HEADER    lv_color_hex(0x121224)
-#define COLOR_TEXT      lv_color_hex(0xFFFFFF)
+#define COLOR_GREY       lv_color_hex(0x808080)
+#define COLOR_LIGHT_GREY lv_color_hex(0xA0A0A0)
+#define COLOR_YELLOW     lv_color_hex(0xFFD700)
+#define COLOR_CHECKED    lv_color_hex(0x32CD32)
+#define COLOR_BG         lv_color_hex(0x1a1a2e)
+#define COLOR_HEADER     lv_color_hex(0x121224)
+#define COLOR_TEXT       lv_color_hex(0xFFFFFF)
 
 /*====================
    ROLE STATE MACHINE
@@ -593,7 +594,7 @@ static void create_ui(void) {
     /* Status label in header, left-aligned, vertically centered */
     g_status_label = lv_label_create(g_header);
     lv_label_set_text(g_status_label, "Initializing NFC...");
-    lv_obj_set_style_text_color(g_status_label, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_status_label, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_obj_set_width(g_status_label, 688);
