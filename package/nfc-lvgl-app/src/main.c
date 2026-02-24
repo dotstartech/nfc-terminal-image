@@ -1,17 +1,17 @@
 /**
  * @file main.c
- * NFC Check-in/Check-out Demo Application with LVGL UI
+ * NFC Demo Applications with LVGL UI
  *
- * Features:
- * - Role A and Role B buttons (grey/yellow toggle)
+ * Check-in/Check-out App Features:
+ * - 'Role A', 'Role B', etc. buttons (grey/yellow toggle)
  * - NFC tag detection displays tag ID
  * - Check-in/check-out state machine per role
- * - Touch input support via evdev
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
@@ -43,14 +43,100 @@
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
 
-#define COLOR_GREY       lv_color_hex(0x808080)
-#define COLOR_LIGHT_GREY lv_color_hex(0xA0A0A0)
-#define COLOR_PRESSED    lv_color_hex(0xC8C8C8)  /* Much brighter for visible press effect */
-#define COLOR_YELLOW     lv_color_hex(0xFFD700)
-#define COLOR_CHECKED    lv_color_hex(0x32CD32)
-#define COLOR_BG         lv_color_hex(0x1a1a2e)
-#define COLOR_HEADER     lv_color_hex(0x121224)
-#define COLOR_TEXT       lv_color_hex(0xFFFFFF)
+/*====================
+   COLOR THEMES
+ *====================*/
+typedef enum {
+    THEME_HIGH_CONTRAST,
+    THEME_DARK_MOCHA,
+    THEME_LIGHT_LATTE
+} color_theme_t;
+
+typedef struct {
+    lv_color_t bg;           /* Background */
+    lv_color_t header;       /* Header background */
+    lv_color_t btn_default;  /* Button default */
+    lv_color_t btn_pressed;  /* Button pressed */
+    lv_color_t btn_selected; /* Button selected (yellow) */
+    lv_color_t btn_checked;  /* Button checked in (green) */
+    lv_color_t text;         /* Primary text */
+    lv_color_t text_secondary; /* Secondary/muted text */
+    lv_color_t btn_text;     /* Button label text */
+    lv_color_t role_unselected_bg;   /* Role button unselected background */
+    lv_color_t role_unselected_text; /* Role button unselected text */
+} theme_colors_t;
+
+/* High Contrast theme (current colors) */
+static const theme_colors_t g_theme_high_contrast = {
+    .bg           = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e */
+    .header       = {.red = 0x12, .green = 0x12, .blue = 0x24},  /* 0x121224 */
+    .btn_default  = {.red = 0x80, .green = 0x80, .blue = 0x80},  /* 0x808080 */
+    .btn_pressed  = {.red = 0xC8, .green = 0xC8, .blue = 0xC8},  /* 0xC8C8C8 */
+    .btn_selected = {.red = 0xFF, .green = 0xD7, .blue = 0x00},  /* 0xFFD700 */
+    .btn_checked  = {.red = 0x32, .green = 0xCD, .blue = 0x32},  /* 0x32CD32 */
+    .text         = {.red = 0xFF, .green = 0xFF, .blue = 0xFF},  /* 0xFFFFFF */
+    .text_secondary = {.red = 0xA0, .green = 0xA0, .blue = 0xA0}, /* 0xA0A0A0 */
+    .btn_text     = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e (dark on button) */
+    .role_unselected_bg   = {.red = 0xC8, .green = 0xC8, .blue = 0xC8},  /* Light grey */
+    .role_unselected_text = {.red = 0x40, .green = 0x40, .blue = 0x40},  /* Dark grey */
+};
+
+/* Catppuccin Mocha (Dark) */
+static const theme_colors_t g_theme_dark_mocha = {
+    .bg           = {.red = 0x1e, .green = 0x1e, .blue = 0x2e},  /* Base: 0x1e1e2e */
+    .header       = {.red = 0x18, .green = 0x18, .blue = 0x25},  /* Mantle: 0x181825 */
+    .btn_default  = {.red = 0x31, .green = 0x32, .blue = 0x44},  /* Surface0: 0x313244 */
+    .btn_pressed  = {.red = 0x45, .green = 0x47, .blue = 0x5a},  /* Surface1: 0x45475a */
+    .btn_selected = {.red = 0xf9, .green = 0xe2, .blue = 0xaf},  /* Yellow: 0xf9e2af */
+    .btn_checked  = {.red = 0xa6, .green = 0xe3, .blue = 0xa1},  /* Green: 0xa6e3a1 */
+    .text         = {.red = 0xcd, .green = 0xd6, .blue = 0xf4},  /* Text: 0xcdd6f4 */
+    .text_secondary = {.red = 0x6c, .green = 0x70, .blue = 0x86}, /* Overlay0: 0x6c7086 */
+    .btn_text     = {.red = 0xcd, .green = 0xd6, .blue = 0xf4},  /* Text: light on dark button */
+    .role_unselected_bg   = {.red = 0x93, .green = 0x9d, .blue = 0xb4},  /* Overlay2: lighter */
+    .role_unselected_text = {.red = 0x1e, .green = 0x1e, .blue = 0x2e},  /* Base: dark */
+};
+
+/* Catppuccin Latte (Light) */
+static const theme_colors_t g_theme_light_latte = {
+    .bg           = {.red = 0xef, .green = 0xf1, .blue = 0xf5},  /* Base: 0xeff1f5 */
+    .header       = {.red = 0xe6, .green = 0xe9, .blue = 0xef},  /* Mantle: 0xe6e9ef */
+    .btn_default  = {.red = 0xac, .green = 0xb0, .blue = 0xbe},  /* Surface2: darker */
+    .btn_pressed  = {.red = 0x9c, .green = 0xa0, .blue = 0xb0},  /* Overlay0: darker */
+    .btn_selected = {.red = 0xdf, .green = 0x8e, .blue = 0x1d},  /* Yellow: 0xdf8e1d */
+    .btn_checked  = {.red = 0x40, .green = 0xa0, .blue = 0x2b},  /* Green: 0x40a02b */
+    .text         = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text: 0x4c4f69 */
+    .text_secondary = {.red = 0x7c, .green = 0x7f, .blue = 0x93}, /* Subtext0: darker */
+    .btn_text     = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text (dark on button) */
+    .role_unselected_bg   = {.red = 0xbc, .green = 0xc0, .blue = 0xcc},  /* Surface1: darker */
+    .role_unselected_text = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text: darker */
+};
+
+static color_theme_t g_current_theme = THEME_HIGH_CONTRAST;
+static const theme_colors_t *g_theme = &g_theme_high_contrast;
+static bool g_theme_locked = false;  /* Theme locked after leaving landing page */
+
+/* Convenience macros to access current theme colors */
+#define THEME_BG           (g_theme->bg)
+#define THEME_HEADER       (g_theme->header)
+#define THEME_BTN_DEFAULT  (g_theme->btn_default)
+#define THEME_BTN_PRESSED  (g_theme->btn_pressed)
+#define THEME_BTN_SELECTED (g_theme->btn_selected)
+#define THEME_BTN_CHECKED  (g_theme->btn_checked)
+#define THEME_TEXT         (g_theme->text)
+#define THEME_TEXT_SECONDARY (g_theme->text_secondary)
+#define THEME_BTN_TEXT     (g_theme->btn_text)
+#define THEME_ROLE_UNSELECTED_BG   (g_theme->role_unselected_bg)
+#define THEME_ROLE_UNSELECTED_TEXT (g_theme->role_unselected_text)
+
+/* Backward-compatible color macros using theme */
+#define COLOR_GREY       THEME_BTN_DEFAULT
+#define COLOR_LIGHT_GREY THEME_TEXT_SECONDARY
+#define COLOR_PRESSED    THEME_BTN_PRESSED
+#define COLOR_YELLOW     THEME_BTN_SELECTED
+#define COLOR_CHECKED    THEME_BTN_CHECKED
+#define COLOR_BG         THEME_BG
+#define COLOR_HEADER     THEME_HEADER
+#define COLOR_TEXT       THEME_TEXT
 
 /*====================
    APP/PAGE STATE
@@ -96,9 +182,13 @@ static lv_obj_t *g_landing_title = NULL;
 static lv_obj_t *g_btn_simple_checkin = NULL;
 static lv_obj_t *g_btn_roles_booking = NULL;
 static lv_obj_t *g_btn_ev_charging = NULL;
+static lv_obj_t *g_btn_theme_contrast = NULL;
+static lv_obj_t *g_btn_theme_dark = NULL;
+static lv_obj_t *g_btn_theme_light = NULL;
 
-/* Roles booking app container */
+/* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
+static lv_obj_t *g_btn_back = NULL;
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -405,7 +495,7 @@ static void update_button_color(role_t *role) {
             break;
         case ROLE_STATE_UNSELECTED:
         default:
-            color = COLOR_GREY;
+            color = THEME_ROLE_UNSELECTED_BG;
             break;
     }
 
@@ -601,10 +691,182 @@ static void *nfc_thread(void *arg) {
    UI SETUP
  *====================*/
 
+/* Forward declarations for theme functions */
+static void apply_theme(void);
+
+/* Apply current theme colors to all UI elements */
+static void apply_theme(void) {
+    lv_obj_t *scr = lv_screen_active();
+    
+    printf("apply_theme: Applying theme %d\n", g_current_theme);
+    fflush(stdout);
+    
+    /* Screen background */
+    lv_obj_set_style_bg_color(scr, THEME_BG, LV_PART_MAIN);
+    
+    /* Landing page */
+    if (g_landing_container) {
+        lv_obj_set_style_bg_color(g_landing_container, THEME_BG, LV_PART_MAIN);
+    }
+    if (g_landing_title) {
+        lv_obj_set_style_text_color(g_landing_title, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_simple_checkin) {
+        lv_obj_set_style_bg_color(g_btn_simple_checkin, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_simple_checkin, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_roles_booking) {
+        lv_obj_set_style_bg_color(g_btn_roles_booking, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_roles_booking, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_ev_charging) {
+        lv_obj_set_style_bg_color(g_btn_ev_charging, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_ev_charging, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    
+    /* Update theme toggle button styles (not the selected one) */
+    if (g_btn_theme_contrast) {
+        lv_obj_set_style_bg_color(g_btn_theme_contrast, 
+            g_current_theme == THEME_HIGH_CONTRAST ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_HIGH_CONTRAST ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_theme_dark) {
+        lv_obj_set_style_bg_color(g_btn_theme_dark, 
+            g_current_theme == THEME_DARK_MOCHA ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_DARK_MOCHA ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_theme_light) {
+        lv_obj_set_style_bg_color(g_btn_theme_light, 
+            g_current_theme == THEME_LIGHT_LATTE ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_light, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    
+    /* Roles booking page */
+    if (g_header) {
+        lv_obj_set_style_bg_color(g_header, THEME_HEADER, LV_PART_MAIN);
+    }
+    if (g_status_label) {
+        lv_obj_set_style_text_color(g_status_label, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_roles_container) {
+        lv_obj_set_style_bg_color(g_roles_container, THEME_BG, LV_PART_MAIN);
+    }
+    
+    /* Role buttons - only update unselected ones */
+    for (int i = 0; i < NUM_ROLES; i++) {
+        if (g_roles[i].btn) {
+            if (g_roles[i].state == ROLE_STATE_UNSELECTED) {
+                lv_obj_set_style_bg_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+                lv_obj_set_style_border_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+            }
+            if (g_roles[i].label) {
+                lv_obj_set_style_text_color(g_roles[i].label, THEME_ROLE_UNSELECTED_TEXT, LV_PART_MAIN);
+            }
+        }
+    }
+    
+    lv_obj_invalidate(scr);
+    lv_refr_now(g_display);
+}
+
+/* Helper to update theme button styles */
+static void update_theme_button_styles(void) {
+    if (!g_btn_theme_contrast || !g_btn_theme_dark || !g_btn_theme_light) return;
+    
+    /* Set all buttons to default (not selected) */
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    
+    /* Update label colors for non-selected buttons */
+    lv_obj_t *lbl;
+    lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    lbl = lv_obj_get_child(g_btn_theme_light, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    
+    /* Highlight the selected button */
+    switch (g_current_theme) {
+        case THEME_HIGH_CONTRAST:
+            lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+        case THEME_DARK_MOCHA:
+            lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+        case THEME_LIGHT_LATTE:
+            lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_light, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+    }
+    
+    lv_obj_invalidate(g_btn_theme_contrast);
+    lv_obj_invalidate(g_btn_theme_dark);
+    lv_obj_invalidate(g_btn_theme_light);
+}
+
+/* Theme button callback */
+static void theme_btn_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    
+    if (code != LV_EVENT_CLICKED) {
+        return;
+    }
+    
+    if (g_theme_locked) {
+        printf("theme_btn_cb: Theme is locked, ignoring change\n");
+        fflush(stdout);
+        return;
+    }
+    
+    lv_obj_t *btn = lv_event_get_target(e);
+    
+    if (btn == g_btn_theme_contrast) {
+        g_current_theme = THEME_HIGH_CONTRAST;
+        g_theme = &g_theme_high_contrast;
+        printf("theme_btn_cb: Selected High Contrast\n");
+    } else if (btn == g_btn_theme_dark) {
+        g_current_theme = THEME_DARK_MOCHA;
+        g_theme = &g_theme_dark_mocha;
+        printf("theme_btn_cb: Selected Dark Mocha\n");
+    } else if (btn == g_btn_theme_light) {
+        g_current_theme = THEME_LIGHT_LATTE;
+        g_theme = &g_theme_light_latte;
+        printf("theme_btn_cb: Selected Light Latte\n");
+    }
+    fflush(stdout);
+    
+    update_theme_button_styles();
+    apply_theme();
+    lv_refr_now(NULL);
+}
+
 /* Show/hide pages based on current page */
 static void show_page(app_page_t page) {
     printf("show_page: Switching to page %d\n", page);
     fflush(stdout);
+    
+    /* Lock theme when leaving landing page */
+    if (g_current_page == PAGE_LANDING && page != PAGE_LANDING) {
+        g_theme_locked = true;
+        printf("show_page: Theme locked to %d\n", g_current_theme);
+        fflush(stdout);
+    }
     
     g_current_page = page;
     
@@ -658,7 +920,7 @@ static void btn_press_effect_cb(lv_event_t *e) {
 /* Landing page button callbacks */
 static void landing_btn_simple_checkin_cb(lv_event_t *e) {
     (void)e;
-    printf("Landing: Simple Check-in/Check-out selected (not implemented)\n");
+    printf("Landing: Check-in/Check-out selected (not implemented)\n");
     fflush(stdout);
     /* Not implemented yet */
 }
@@ -675,6 +937,14 @@ static void landing_btn_ev_charging_cb(lv_event_t *e) {
     printf("Landing: EV Charging selected (not implemented)\n");
     fflush(stdout);
     /* Not implemented yet */
+}
+
+static void back_btn_cb(lv_event_t *e) {
+    (void)e;
+    printf("Back button pressed - returning to landing page\n");
+    fflush(stdout);
+    g_theme_locked = false;  /* Unlock theme when returning to landing */
+    show_page(PAGE_LANDING);
 }
 
 static void create_ui(void) {
@@ -697,22 +967,82 @@ static void create_ui(void) {
     lv_obj_set_pos(g_landing_container, 0, 0);
     lv_obj_set_style_bg_color(g_landing_container, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_landing_container, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_SCROLLABLE);  /* Disable scrolling */
 
     /* Landing page title */
     g_landing_title = lv_label_create(g_landing_container);
     lv_label_set_text(g_landing_title, "NFC Terminal");
-    lv_obj_set_style_text_color(g_landing_title, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 60);
+
+    /* Theme selector buttons at bottom of landing page */
+    const int theme_btn_size = 84;
+    const int theme_btn_gap = 20;
+    const int theme_btn_y = -92;
+    
+    /* Button 1: High Contrast */
+    g_btn_theme_contrast = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_BOTTOM_MID, -(theme_btn_size + theme_btn_gap), theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
+    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
+    lv_label_set_text(lbl_contrast, LV_SYMBOL_IMAGE);  /* Contrast-like icon */
+    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_contrast, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_center(lbl_contrast);
+    
+    /* Button 2: Dark (Mocha) */
+    g_btn_theme_dark = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_dark, LV_ALIGN_BOTTOM_MID, 0, theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
+    lv_label_set_text(lbl_dark, LV_SYMBOL_EYE_CLOSE);  /* Moon-like (closed eye) */
+    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dark, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_center(lbl_dark);
+    
+    /* Button 3: Light (Latte) */
+    g_btn_theme_light = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_light, LV_ALIGN_BOTTOM_MID, theme_btn_size + theme_btn_gap, theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
+    lv_label_set_text(lbl_light, LV_SYMBOL_EYE_OPEN);  /* Sun-like (open eye) */
+    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_light, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_center(lbl_light);
+    
+    printf("UI: Theme toggle buttons created\n");
+    fflush(stdout);
 
     /* Landing page buttons - vertically centered */
     const int landing_btn_width = 400;
     const int landing_btn_height = 80;
     const int landing_btn_gap = 20;
     const int landing_total_height = 3 * landing_btn_height + 2 * landing_btn_gap;
-    const int landing_start_y = (720 - landing_total_height) / 2;
+    const int landing_start_y = (720 - landing_total_height) / 2 - 20;
 
-    /* Button 1: Simple Check-in/Check-out */
+    /* Button 1: Check-in/Check-out */
     g_btn_simple_checkin = lv_button_create(g_landing_container);
     lv_obj_set_size(g_btn_simple_checkin, landing_btn_width, landing_btn_height);
     lv_obj_set_pos(g_btn_simple_checkin, (720 - landing_btn_width) / 2, landing_start_y);
@@ -725,9 +1055,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_simple_checkin, landing_btn_simple_checkin_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *lbl1 = lv_label_create(g_btn_simple_checkin);
-    lv_label_set_text(lbl1, "Simple Check-in/Check-out");
-    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(lbl1, COLOR_BG, LV_PART_MAIN);
+    lv_label_set_text(lbl1, "Check-in/Check-out");
+    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl1, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl1);
 
     /* Button 2: Roles Booking */
@@ -744,8 +1074,8 @@ static void create_ui(void) {
     
     lv_obj_t *lbl2 = lv_label_create(g_btn_roles_booking);
     lv_label_set_text(lbl2, "Roles Booking");
-    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(lbl2, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl2, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl2);
 
     /* Button 3: EV Charging */
@@ -762,8 +1092,8 @@ static void create_ui(void) {
     
     lv_obj_t *lbl3 = lv_label_create(g_btn_ev_charging);
     lv_label_set_text(lbl3, "EV Charging");
-    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(lbl3, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl3, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl3);
 
     /*========================================
@@ -784,8 +1114,28 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_status_label, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
-    lv_obj_set_width(g_status_label, 688);
+    lv_obj_set_width(g_status_label, 600);
     lv_obj_align(g_status_label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* Back button in header, top-right corner */
+    g_btn_back = lv_button_create(g_header);
+    lv_obj_set_size(g_btn_back, 96, 96);
+    lv_obj_align(g_btn_back, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_set_style_bg_color(g_btn_back, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_back, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_back, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_back, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_back, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_back, back_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_back = lv_label_create(g_btn_back);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);  /* FA f08b placeholder */
+    lv_obj_set_style_text_color(lbl_back, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_back, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_center(lbl_back);
 
     /* Roles container - holds all role buttons */
     g_roles_container = lv_obj_create(scr);
@@ -812,10 +1162,10 @@ static void create_ui(void) {
         g_roles[i].btn = lv_button_create(g_roles_container);
         lv_obj_set_size(g_roles[i].btn, btn_width, btn_height);
         lv_obj_set_pos(g_roles[i].btn, x, y);
-        lv_obj_set_style_bg_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_radius(g_roles[i].btn, 8, LV_PART_MAIN);
-        lv_obj_set_style_border_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
         lv_obj_set_style_border_width(g_roles[i].btn, 4, LV_PART_MAIN);
         lv_obj_set_style_border_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_add_event_cb(g_roles[i].btn, role_btn_event_cb, LV_EVENT_CLICKED, &g_roles[i]);
@@ -823,7 +1173,7 @@ static void create_ui(void) {
         g_roles[i].label = lv_label_create(g_roles[i].btn);
         lv_label_set_text(g_roles[i].label, g_role_names[i]);
         lv_obj_set_style_text_font(g_roles[i].label, &lv_font_montserrat_28, LV_PART_MAIN);
-        lv_obj_set_style_text_color(g_roles[i].label, COLOR_BG, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g_roles[i].label, THEME_ROLE_UNSELECTED_TEXT, LV_PART_MAIN);
         lv_obj_center(g_roles[i].label);
     }
 
