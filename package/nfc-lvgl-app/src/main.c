@@ -45,6 +45,7 @@
 
 #define COLOR_GREY       lv_color_hex(0x808080)
 #define COLOR_LIGHT_GREY lv_color_hex(0xA0A0A0)
+#define COLOR_PRESSED    lv_color_hex(0xC8C8C8)  /* Much brighter for visible press effect */
 #define COLOR_YELLOW     lv_color_hex(0xFFD700)
 #define COLOR_CHECKED    lv_color_hex(0x32CD32)
 #define COLOR_BG         lv_color_hex(0x1a1a2e)
@@ -634,6 +635,26 @@ static void show_page(app_page_t page) {
     lv_refr_now(g_display);
 }
 
+/* Generic button press effect callback */
+static void btn_press_effect_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    
+    if (code == LV_EVENT_PRESSED) {
+        lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
+        lv_obj_invalidate(btn);
+        lv_refr_now(g_display);
+        printf("Button PRESSED - color changed to PRESSED\n");
+        fflush(stdout);
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
+        lv_obj_invalidate(btn);
+        lv_refr_now(g_display);
+        printf("Button RELEASED - color changed to GREY\n");
+        fflush(stdout);
+    }
+}
+
 /* Landing page button callbacks */
 static void landing_btn_simple_checkin_cb(lv_event_t *e) {
     (void)e;
@@ -698,6 +719,9 @@ static void create_ui(void) {
     lv_obj_set_style_bg_color(g_btn_simple_checkin, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_simple_checkin, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_simple_checkin, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(g_btn_simple_checkin, landing_btn_simple_checkin_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *lbl1 = lv_label_create(g_btn_simple_checkin);
@@ -713,6 +737,9 @@ static void create_ui(void) {
     lv_obj_set_style_bg_color(g_btn_roles_booking, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_roles_booking, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_roles_booking, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(g_btn_roles_booking, landing_btn_roles_booking_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *lbl2 = lv_label_create(g_btn_roles_booking);
@@ -728,6 +755,9 @@ static void create_ui(void) {
     lv_obj_set_style_bg_color(g_btn_ev_charging, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_ev_charging, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_ev_charging, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(g_btn_ev_charging, landing_btn_ev_charging_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *lbl3 = lv_label_create(g_btn_ev_charging);
