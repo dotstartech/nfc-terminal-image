@@ -25,7 +25,6 @@
 #include <sys/socket.h>
 #include <net/if.h>
 
-#define LV_CONF_INCLUDE_SIMPLE
 #include "lvgl/lvgl.h"
 #include "linux_nfc_api.h"
 #include "MQTTAsync.h"
@@ -53,6 +52,18 @@
 #define COLOR_TEXT       lv_color_hex(0xFFFFFF)
 
 /*====================
+   APP/PAGE STATE
+ *====================*/
+typedef enum {
+    PAGE_LANDING,
+    PAGE_SIMPLE_CHECKIN,
+    PAGE_ROLES_BOOKING,
+    PAGE_EV_CHARGING
+} app_page_t;
+
+static app_page_t g_current_page = PAGE_LANDING;
+
+/*====================
    ROLE STATE MACHINE
  *====================*/
 typedef enum {
@@ -77,6 +88,17 @@ static role_t g_roles[NUM_ROLES] = {0};
 static lv_obj_t *g_status_label = NULL;
 static lv_obj_t *g_header = NULL;
 static lv_obj_t *g_touch_debug_label = NULL;  /* Debug: show touch coords */
+
+/* Landing page UI */
+static lv_obj_t *g_landing_container = NULL;
+static lv_obj_t *g_landing_title = NULL;
+static lv_obj_t *g_btn_simple_checkin = NULL;
+static lv_obj_t *g_btn_roles_booking = NULL;
+static lv_obj_t *g_btn_ev_charging = NULL;
+
+/* Roles booking app container */
+static lv_obj_t *g_roles_container = NULL;
+
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int g_running = 1;
@@ -577,11 +599,146 @@ static void *nfc_thread(void *arg) {
 /*====================
    UI SETUP
  *====================*/
+
+/* Show/hide pages based on current page */
+static void show_page(app_page_t page) {
+    printf("show_page: Switching to page %d\n", page);
+    fflush(stdout);
+    
+    g_current_page = page;
+    
+    /* Hide all pages first */
+    if (g_landing_container) lv_obj_add_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_roles_container) lv_obj_add_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_header) lv_obj_add_flag(g_header, LV_OBJ_FLAG_HIDDEN);
+    
+    /* Show the selected page */
+    switch (page) {
+        case PAGE_LANDING:
+            printf("show_page: Showing landing page\n");
+            fflush(stdout);
+            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+        case PAGE_ROLES_BOOKING:
+            if (g_header) lv_obj_remove_flag(g_header, LV_OBJ_FLAG_HIDDEN);
+            if (g_roles_container) lv_obj_remove_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+        case PAGE_SIMPLE_CHECKIN:
+        case PAGE_EV_CHARGING:
+            /* Not implemented yet - stay on landing */
+            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            break;
+    }
+    
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(g_display);
+}
+
+/* Landing page button callbacks */
+static void landing_btn_simple_checkin_cb(lv_event_t *e) {
+    (void)e;
+    printf("Landing: Simple Check-in/Check-out selected (not implemented)\n");
+    fflush(stdout);
+    /* Not implemented yet */
+}
+
+static void landing_btn_roles_booking_cb(lv_event_t *e) {
+    (void)e;
+    printf("Landing: Roles Booking selected\n");
+    fflush(stdout);
+    show_page(PAGE_ROLES_BOOKING);
+}
+
+static void landing_btn_ev_charging_cb(lv_event_t *e) {
+    (void)e;
+    printf("Landing: EV Charging selected (not implemented)\n");
+    fflush(stdout);
+    /* Not implemented yet */
+}
+
 static void create_ui(void) {
+    printf("create_ui: Starting UI creation...\n");
+    fflush(stdout);
+
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
+    /*========================================
+       LANDING PAGE
+     *========================================*/
+    printf("UI: Creating landing page...\n");
+    fflush(stdout);
+
+    g_landing_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_landing_container);
+    lv_obj_set_size(g_landing_container, 720, 720);
+    lv_obj_set_pos(g_landing_container, 0, 0);
+    lv_obj_set_style_bg_color(g_landing_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_landing_container, LV_OPA_COVER, LV_PART_MAIN);
+
+    /* Landing page title */
+    g_landing_title = lv_label_create(g_landing_container);
+    lv_label_set_text(g_landing_title, "NFC Terminal");
+    lv_obj_set_style_text_color(g_landing_title, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 60);
+
+    /* Landing page buttons - vertically centered */
+    const int landing_btn_width = 400;
+    const int landing_btn_height = 80;
+    const int landing_btn_gap = 20;
+    const int landing_total_height = 3 * landing_btn_height + 2 * landing_btn_gap;
+    const int landing_start_y = (720 - landing_total_height) / 2;
+
+    /* Button 1: Simple Check-in/Check-out */
+    g_btn_simple_checkin = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_simple_checkin, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_simple_checkin, (720 - landing_btn_width) / 2, landing_start_y);
+    lv_obj_set_style_bg_color(g_btn_simple_checkin, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_simple_checkin, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_simple_checkin, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_simple_checkin, landing_btn_simple_checkin_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl1 = lv_label_create(g_btn_simple_checkin);
+    lv_label_set_text(lbl1, "Simple Check-in/Check-out");
+    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl1, COLOR_BG, LV_PART_MAIN);
+    lv_obj_center(lbl1);
+
+    /* Button 2: Roles Booking */
+    g_btn_roles_booking = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_roles_booking, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_roles_booking, (720 - landing_btn_width) / 2, landing_start_y + landing_btn_height + landing_btn_gap);
+    lv_obj_set_style_bg_color(g_btn_roles_booking, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_roles_booking, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_roles_booking, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_roles_booking, landing_btn_roles_booking_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl2 = lv_label_create(g_btn_roles_booking);
+    lv_label_set_text(lbl2, "Roles Booking");
+    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl2, COLOR_BG, LV_PART_MAIN);
+    lv_obj_center(lbl2);
+
+    /* Button 3: EV Charging */
+    g_btn_ev_charging = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_ev_charging, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_ev_charging, (720 - landing_btn_width) / 2, landing_start_y + 2 * (landing_btn_height + landing_btn_gap));
+    lv_obj_set_style_bg_color(g_btn_ev_charging, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_ev_charging, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_ev_charging, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_ev_charging, landing_btn_ev_charging_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl3 = lv_label_create(g_btn_ev_charging);
+    lv_label_set_text(lbl3, "EV Charging");
+    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl3, COLOR_BG, LV_PART_MAIN);
+    lv_obj_center(lbl3);
+
+    /*========================================
+       ROLES BOOKING APP
+     *========================================*/
     /* Header: 720x120 at top */
     g_header = lv_obj_create(scr);
     lv_obj_remove_style_all(g_header);
@@ -600,13 +757,19 @@ static void create_ui(void) {
     lv_obj_set_width(g_status_label, 688);
     lv_obj_align(g_status_label, LV_ALIGN_LEFT_MID, 0, 0);
 
+    /* Roles container - holds all role buttons */
+    g_roles_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_roles_container);
+    lv_obj_set_size(g_roles_container, 720, 600);
+    lv_obj_set_pos(g_roles_container, 0, 120);
+    lv_obj_set_style_bg_color(g_roles_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_roles_container, LV_OPA_COVER, LV_PART_MAIN);
+
     /* Button dimensions: 8px gaps, 4 buttons per row */
-    /* Total width = 720, side padding = 8 each, 3 gaps of 8 = 40px total padding */
-    /* Button width = (720 - 40) / 4 = 170px */
     const int btn_width = 170;
     const int btn_height = 90;
     const int gap = 8;
-    const int row1_y = 128;  /* First row below header */
+    const int row1_y = 8;  /* First row in container */
     const int row2_y = row1_y + btn_height + gap;
 
     /* Create 8 buttons in 2 rows */
@@ -616,7 +779,7 @@ static void create_ui(void) {
         int x = gap + col * (btn_width + gap);
         int y = (row == 0) ? row1_y : row2_y;
 
-        g_roles[i].btn = lv_button_create(scr);
+        g_roles[i].btn = lv_button_create(g_roles_container);
         lv_obj_set_size(g_roles[i].btn, btn_width, btn_height);
         lv_obj_set_pos(g_roles[i].btn, x, y);
         lv_obj_set_style_bg_color(g_roles[i].btn, COLOR_GREY, LV_PART_MAIN);
@@ -640,6 +803,13 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_touch_debug_label, lv_color_hex(0x808080), LV_PART_MAIN);
     lv_obj_set_style_text_font(g_touch_debug_label, &lv_font_montserrat_18, LV_PART_MAIN);
     lv_obj_align(g_touch_debug_label, LV_ALIGN_BOTTOM_MID, 0, -11);
+
+    /* Start on landing page */
+    printf("create_ui: Calling show_page(PAGE_LANDING)...\n");
+    fflush(stdout);
+    show_page(PAGE_LANDING);
+    printf("create_ui: UI creation complete.\n");
+    fflush(stdout);
 }
 
 /*====================

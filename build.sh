@@ -154,6 +154,12 @@ case "${1:-build}" in
         make
         ;;
 
+    rebuild-demoapp)
+        print_status "Rebuilding nfc-lvgl-app..."
+        make nfc-lvgl-app-rebuild
+        make
+        ;;
+
     savedefconfig)
         print_status "Saving current config to defconfig..."
         make savedefconfig BR2_DEFCONFIG="${EXTERNAL_DIR}/configs/nfc_terminal_cm4_defconfig"
@@ -209,6 +215,7 @@ case "${1:-build}" in
         echo "  distclean       - Remove all build artifacts and configuration"
         echo "  rebuild-kernel  - Rebuild only the kernel"
         echo "  rebuild-driver  - Rebuild only the ST7703 display driver"
+        echo "  rebuild-demoapp - Rebuild only the nfc-lvgl-app demo"
         echo "  savedefconfig   - Save current config to defconfig file"
         echo "  flash <device>  - Flash image to SD card or eMMC device"
         echo "  rpiboot         - Start rpiboot for CM4 eMMC programming"
