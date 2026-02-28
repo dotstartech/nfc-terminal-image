@@ -38,14 +38,15 @@
 #define MQTT_CLIENT_ID  "nfc-terminal"
 #define MQTT_USERNAME   "admin"
 #define MQTT_PASSWORD   "admin"
-#define MQTT_QOS        1
+#define MQTT_QOS        2
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
 
-/*====================
-   COLOR THEMES
- *====================*/
+/* Logging macro - printf with immediate flush */
+#define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
+
+/* Color themes */
 typedef enum {
     THEME_HIGH_CONTRAST,
     THEME_DARK_MOCHA,
@@ -66,7 +67,7 @@ typedef struct {
     lv_color_t role_unselected_text; /* Role button unselected text */
 } theme_colors_t;
 
-/* High Contrast theme (current colors) */
+/* High Contrast theme */
 static const theme_colors_t g_theme_high_contrast = {
     .bg           = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e */
     .header       = {.red = 0x12, .green = 0x12, .blue = 0x24},  /* 0x121224 */
@@ -138,9 +139,7 @@ static bool g_theme_locked = false;  /* Theme locked after leaving landing page 
 #define COLOR_HEADER     THEME_HEADER
 #define COLOR_TEXT       THEME_TEXT
 
-/*====================
-   APP/PAGE STATE
- *====================*/
+/* App/page state*/
 typedef enum {
     PAGE_LANDING,
     PAGE_SIMPLE_CHECKIN,
@@ -281,21 +280,20 @@ static void restore_console(void) {
     fflush(stdout);
 }
 
-/*====================
-   FRAMEBUFFER DISPLAY
- *====================*/
+/* Framebuffer display*/
 static int g_flush_count = 0;
 
 static void fb_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     g_flush_count++;
     
     /* Log every 100th flush or if area includes status label region (y < 300) */
+    /*
     if (g_flush_count % 100 == 0 || (area->y1 < 300 && area->y2 > 150)) {
-        printf("FB: flush #%d area=(%d,%d)-(%d,%d)\n", 
+        LOG("FB: flush #%d area=(%d,%d)-(%d,%d)\n", 
                g_flush_count, area->x1, area->y1, area->x2, area->y2);
-        fflush(stdout);
     }
-    
+    */
+
     if (g_fb_mem == NULL) {
         lv_display_flush_ready(disp);
         return;
@@ -457,7 +455,7 @@ static int touch_init(void) {
         g_touch_x_max = abs_x.maximum;
         g_touch_y_min = abs_y.minimum;
         g_touch_y_max = abs_y.maximum;
-        printf("Touch MT: X=%d-%d, Y=%d-%d\n", 
+        LOG("Touch MT: X=%d-%d, Y=%d-%d\n", 
                g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
     } else if (ioctl(g_touch_fd, EVIOCGABS(ABS_X), &abs_x) == 0 &&
                ioctl(g_touch_fd, EVIOCGABS(ABS_Y), &abs_y) == 0) {
@@ -465,11 +463,11 @@ static int touch_init(void) {
         g_touch_x_max = abs_x.maximum;
         g_touch_y_min = abs_y.minimum;
         g_touch_y_max = abs_y.maximum;
-        printf("Touch ABS: X=%d-%d, Y=%d-%d\n",
+        LOG("Touch ABS: X=%d-%d, Y=%d-%d\n",
                g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
     }
 
-    printf("Touch initialized\n");
+    LOG("Touch initialized\n");
     return 0;
 }
 
@@ -507,8 +505,7 @@ static void update_status_label(void) {
     char status[256] = "";
     const char *tag_str = (g_last_tag_id[0] != '\0') ? g_last_tag_id : "";
 
-    printf("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", g_nfc_ready, tag_str);
-    fflush(stdout);
+    LOG("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", g_nfc_ready, tag_str);
 
     /* Build status string */
     if (tag_str[0] == '\0') {
@@ -522,8 +519,7 @@ static void update_status_label(void) {
     }
 
     lv_label_set_text(g_status_label, status);
-    printf("UI: set label text to: '%s'\n", status);
-    fflush(stdout);
+    LOG("UI: set label text to: '%s'\n", status);
 }
 
 /*====================
@@ -535,17 +531,18 @@ static void role_btn_event_cb(lv_event_t *e) {
     /* Note: No mutex needed here - we're called from lv_timer_handler() 
        which already holds the mutex via the main loop */
 
-    printf("Button clicked: state %d -> ", role->state);
-    
+    /*
+    LOG("UI: button clicked: state %d -> %d\n", role->state, 
+        (role->state == ROLE_STATE_UNSELECTED) ? ROLE_STATE_SELECTED :
+        (role->state == ROLE_STATE_SELECTED) ? ROLE_STATE_UNSELECTED : role->state);
+    */
+
     if (role->state == ROLE_STATE_UNSELECTED) {
         role->state = ROLE_STATE_SELECTED;
     } else if (role->state == ROLE_STATE_SELECTED) {
         role->state = ROLE_STATE_UNSELECTED;
     }
     /* CHECKED_IN state: button click does nothing (need same tag to check out) */
-    
-    printf("%d\n", role->state);
-    fflush(stdout);
 
     update_button_color(role);
     update_status_label();
@@ -585,8 +582,7 @@ static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
 static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
     int same_tag = (strcmp(tag_id, g_last_tag_id) == 0);
 
-    printf("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
-    fflush(stdout);
+    LOG("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
 
     /* Process all roles */
     for (int i = 0; i < NUM_ROLES; i++) {
@@ -618,13 +614,11 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
    NFC CALLBACKS
  *====================*/
 static void on_tag_arrival(nfc_tag_info_t *tag_info) {
-    printf("NFC: on_tag_arrival called, tag_info=%p\n", (void*)tag_info);
-    fflush(stdout);
+    LOG("NFC: on_tag_arrival called, tag_info=%p\n", (void*)tag_info);
     if (!tag_info) return;
     char tag_id[64];
     format_tag_id(tag_info, tag_id, sizeof(tag_id));
-    printf("NFC: Tag detected: %s (uid_len=%u, protocol=0x%02X)\n", tag_id, tag_info->uid_length, tag_info->protocol);
-    fflush(stdout);
+    LOG("NFC: Tag detected: %s (uid_len=%u, protocol=0x%02X)\n", tag_id, tag_info->uid_length, tag_info->protocol);
     process_tag_discovery(tag_id, tag_info->protocol);
 }
 
@@ -656,20 +650,16 @@ static void *nfc_thread(void *arg) {
         pthread_mutex_unlock(&g_ui_mutex);
         return NULL;
     } else{
-        printf("NFC: Initialized NFC\n");
-        fflush(stdout);
+        LOG("NFC: Initialized NFC\n");
     }
 
-    /*printf("NFC: Registering callbacks...\n");
-    fflush(stdout);*/
+    /*LOG("NFC: Registering callbacks...\n");*/
     nfcManager_registerTagCallback(&g_nfc_callbacks);
     
-    /*printf("NFC: Enabling discovery (reader_only=0)...\n");
-    fflush(stdout);*/
+    /*LOG("NFC: Enabling discovery (reader_only=0)...\n");*/
     nfcManager_enableDiscovery(DEFAULT_NFA_TECH_MASK, 0, 0, 0);
     
-    printf("NFC: Enabled NFC discovery\n");
-    fflush(stdout);
+    LOG("NFC: Enabled NFC discovery\n");
 
     /* Mark NFC as ready - main loop will refresh UI */
     g_nfc_ready = 1;
@@ -698,8 +688,7 @@ static void apply_theme(void);
 static void apply_theme(void) {
     lv_obj_t *scr = lv_screen_active();
     
-    printf("apply_theme: Applying theme %d\n", g_current_theme);
-    fflush(stdout);
+    LOG("UI: Applying theme %d\n", g_current_theme);
     
     /* Screen background */
     lv_obj_set_style_bg_color(scr, THEME_BG, LV_PART_MAIN);
@@ -829,8 +818,7 @@ static void theme_btn_cb(lv_event_t *e) {
     }
     
     if (g_theme_locked) {
-        printf("theme_btn_cb: Theme is locked, ignoring change\n");
-        fflush(stdout);
+        LOG("theme_btn_cb: Theme is locked, ignoring change\n");
         return;
     }
     
@@ -839,17 +827,16 @@ static void theme_btn_cb(lv_event_t *e) {
     if (btn == g_btn_theme_contrast) {
         g_current_theme = THEME_HIGH_CONTRAST;
         g_theme = &g_theme_high_contrast;
-        printf("theme_btn_cb: Selected High Contrast\n");
+        LOG("UI: Selected High Contrast\n");
     } else if (btn == g_btn_theme_dark) {
         g_current_theme = THEME_DARK_MOCHA;
         g_theme = &g_theme_dark_mocha;
-        printf("theme_btn_cb: Selected Dark Mocha\n");
+        LOG("UI: Selected Dark Mocha\n");
     } else if (btn == g_btn_theme_light) {
         g_current_theme = THEME_LIGHT_LATTE;
         g_theme = &g_theme_light_latte;
-        printf("theme_btn_cb: Selected Light Latte\n");
+        LOG("UI: Selected Light Latte\n");
     }
-    fflush(stdout);
     
     update_theme_button_styles();
     apply_theme();
@@ -858,14 +845,12 @@ static void theme_btn_cb(lv_event_t *e) {
 
 /* Show/hide pages based on current page */
 static void show_page(app_page_t page) {
-    printf("show_page: Switching to page %d\n", page);
-    fflush(stdout);
+    LOG("UI: Switching to page %d\n", page);
     
     /* Lock theme when leaving landing page */
     if (g_current_page == PAGE_LANDING && page != PAGE_LANDING) {
         g_theme_locked = true;
-        printf("show_page: Theme locked to %d\n", g_current_theme);
-        fflush(stdout);
+        LOG("UI: Theme locked to %d\n", g_current_theme);
     }
     
     g_current_page = page;
@@ -878,16 +863,21 @@ static void show_page(app_page_t page) {
     /* Show the selected page */
     switch (page) {
         case PAGE_LANDING:
-            printf("show_page: Showing landing page\n");
-            fflush(stdout);
+            LOG("UI: Showing landing page\n");
             if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
             break;
         case PAGE_ROLES_BOOKING:
+            LOG("UI: Showing roles booking page\n");
             if (g_header) lv_obj_remove_flag(g_header, LV_OBJ_FLAG_HIDDEN);
             if (g_roles_container) lv_obj_remove_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
             break;
         case PAGE_SIMPLE_CHECKIN:
+            LOG("UI: Showing simple check-in page (not implemented)\n");
+            /* Not implemented yet - stay on landing */
+            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            break;
         case PAGE_EV_CHARGING:
+            LOG("UI: Showing EV charging page (not implemented)\n");
             /* Not implemented yet - stay on landing */
             if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
             break;
@@ -901,65 +891,53 @@ static void show_page(app_page_t page) {
 static void btn_press_effect_cb(lv_event_t *e) {
     lv_obj_t *btn = lv_event_get_target(e);
     lv_event_code_t code = lv_event_get_code(e);
-    
     if (code == LV_EVENT_PRESSED) {
         lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        printf("Button PRESSED - color changed to PRESSED\n");
-        fflush(stdout);
+        LOG("UI: Button PRESSED - color changed to PRESSED\n");
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        printf("Button RELEASED - color changed to GREY\n");
-        fflush(stdout);
+        LOG("UI: Button RELEASED - color changed to GREY\n");
     }
 }
 
 /* Landing page button callbacks */
 static void landing_btn_simple_checkin_cb(lv_event_t *e) {
     (void)e;
-    printf("Landing: Check-in/Check-out selected (not implemented)\n");
-    fflush(stdout);
+    LOG("Landing: Check-in/Check-out selected (not implemented)\n");
     /* Not implemented yet */
 }
 
 static void landing_btn_roles_booking_cb(lv_event_t *e) {
     (void)e;
-    printf("Landing: Roles Booking selected\n");
-    fflush(stdout);
+    LOG("UI: Landing page - Roles Booking selected\n");
     show_page(PAGE_ROLES_BOOKING);
 }
 
 static void landing_btn_ev_charging_cb(lv_event_t *e) {
     (void)e;
-    printf("Landing: EV Charging selected (not implemented)\n");
-    fflush(stdout);
+    LOG("UI: Landing page - EV Charging selected (not implemented)\n");
     /* Not implemented yet */
 }
 
 static void back_btn_cb(lv_event_t *e) {
     (void)e;
-    printf("Back button pressed - returning to landing page\n");
-    fflush(stdout);
+    LOG("UI: Back button pressed - returning to landing page\n");
     g_theme_locked = false;  /* Unlock theme when returning to landing */
     show_page(PAGE_LANDING);
 }
 
 static void create_ui(void) {
-    printf("create_ui: Starting UI creation...\n");
-    fflush(stdout);
+    LOG("UI: Starting UI creation...\n");
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
-    /*========================================
-       LANDING PAGE
-     *========================================*/
-    printf("UI: Creating landing page...\n");
-    fflush(stdout);
+    LOG("UI: Creating landing page...\n");
 
     g_landing_container = lv_obj_create(scr);
     lv_obj_remove_style_all(g_landing_container);
@@ -971,7 +949,7 @@ static void create_ui(void) {
 
     /* Landing page title */
     g_landing_title = lv_label_create(g_landing_container);
-    lv_label_set_text(g_landing_title, "NFC Terminal");
+    lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 60);
@@ -1032,8 +1010,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_light, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_center(lbl_light);
     
-    printf("UI: Theme toggle buttons created\n");
-    fflush(stdout);
+    LOG("UI: Theme toggle buttons created\n");
 
     /* Landing page buttons - vertically centered */
     const int landing_btn_width = 400;
@@ -1185,11 +1162,9 @@ static void create_ui(void) {
     lv_obj_align(g_touch_debug_label, LV_ALIGN_BOTTOM_MID, 0, -11);
 
     /* Start on landing page */
-    printf("create_ui: Calling show_page(PAGE_LANDING)...\n");
-    fflush(stdout);
+    LOG("UI: Calling show_page(PAGE_LANDING)...\n");
     show_page(PAGE_LANDING);
-    printf("create_ui: UI creation complete.\n");
-    fflush(stdout);
+    LOG("UI: UI creation complete.\n");
 }
 
 /*====================
@@ -1203,8 +1178,7 @@ static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response) {
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    printf("MQTT: Initial connection successful to %s (MQTT v5.0)\n", MQTT_ADDRESS);
-    fflush(stdout);
+    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", MQTT_ADDRESS);
 }
 
 /* Callback: Called when connected (including auto-reconnect) */
@@ -1214,13 +1188,11 @@ static void mqtt_on_connected(void *context, char *cause) {
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    printf("MQTT: Connected (cause: %s), publishing state ON\n", cause ? cause : "initial");
-    fflush(stdout);
+    LOG("MQTT: Connected (cause: %s), publishing state ON\n", cause ? cause : "initial");
     
     /* Publish online state - called on both initial connect and reconnect */
     if (!g_mqtt_client) {
-        printf("MQTT: Client is NULL, cannot publish state\n");
-        fflush(stdout);
+        LOG("MQTT: Client is NULL, cannot publish state\n");
         return;
     }
     
@@ -1233,16 +1205,14 @@ static void mqtt_on_connected(void *context, char *cause) {
     msg.qos = MQTT_QOS;
     msg.retained = 1;
     
-    printf("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
-    fflush(stdout);
+    LOG("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
     
     int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
     if (rc == MQTTASYNC_SUCCESS) {
-        printf("MQTT: State ON queued for publish\n");
+        LOG("MQTT: State ON queued for publish\n");
     } else {
-        printf("MQTT: Failed to queue state ON, rc=%d\n", rc);
+        LOG("MQTT: Failed to queue state ON, rc=%d\n", rc);
     }
-    fflush(stdout);
 }
 
 /* Callback: Connection failed (MQTT v5.0) */
@@ -1251,8 +1221,7 @@ static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *respo
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 0;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    printf("MQTT: Connect failed, rc=%d (will auto-retry)\n", response ? response->code : -1);
-    fflush(stdout);
+    LOG("MQTT: Connect failed, rc=%d (will auto-retry)\n", response ? response->code : -1);
 }
 
 /* Publish state message (ON/OFF) to state topic - async, non-blocking */
@@ -1262,8 +1231,7 @@ static void mqtt_publish_state(const char *state) {
     pthread_mutex_unlock(&g_mqtt_mutex);
     
     if (!g_mqtt_client || !connected) {
-        printf("MQTT: Not connected, skipping state publish\n");
-        fflush(stdout);
+        LOG("MQTT: Not connected, skipping state publish\n");
         return;
     }
     
@@ -1278,11 +1246,10 @@ static void mqtt_publish_state(const char *state) {
     
     int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
     if (rc == MQTTASYNC_SUCCESS) {
-        printf("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
+        LOG("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
     } else {
-        printf("MQTT: Failed to publish state, rc=%d\n", rc);
+        LOG("MQTT: Failed to publish state, rc=%d\n", rc);
     }
-    fflush(stdout);
 }
 
 static int mqtt_init(void) {
@@ -1291,34 +1258,28 @@ static int mqtt_init(void) {
     MQTTAsync_createOptions create_opts = MQTTAsync_createOptions_initializer;
     int rc;
 
-    printf("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
-    fflush(stdout);
+    LOG("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
 
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
     rc = MQTTAsync_createWithOptions(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
                           MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
-        printf("MQTT: Failed to create client, rc=%d\n", rc);
-        fflush(stdout);
+        LOG("MQTT: Failed to create client, rc=%d\n", rc);
         return -1;
     }
-    printf("MQTT: Created async client for %s (MQTT v5.0)\n", MQTT_ADDRESS);
-    fflush(stdout);
+    LOG("MQTT: Created async client for %s (MQTT v5.0)\n", MQTT_ADDRESS);
 
     /* Set connected callback - called on connect AND auto-reconnect */
-    printf("MQTT: Setting connected callback...\n");
-    fflush(stdout);
+    LOG("MQTT: Setting connected callback...\n");
     rc = MQTTAsync_setConnected(g_mqtt_client, NULL, mqtt_on_connected);
     if (rc != MQTTASYNC_SUCCESS) {
-        printf("MQTT: Failed to set connected callback, rc=%d\n", rc);
-        fflush(stdout);
+        LOG("MQTT: Failed to set connected callback, rc=%d\n", rc);
         MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
         return -1;
     }
-    printf("MQTT: Connected callback set successfully\n");
-    fflush(stdout);
+    LOG("MQTT: Connected callback set successfully\n");
 
     /* Configure Last Will and Testament (LWT) */
     will_opts.topicName = g_mqtt_state_topic;
@@ -1340,27 +1301,23 @@ static int mqtt_init(void) {
     conn_opts.minRetryInterval = MQTT_RECONNECT_MIN_DELAY;
     conn_opts.maxRetryInterval = MQTT_RECONNECT_MAX_DELAY;
 
-    printf("MQTT: LWT configured - topic=%s, message=%s, qos=%d, retained=%d\n",
+    LOG("MQTT: LWT configured - topic=%s, message=%s, qos=%d, retained=%d\n",
            will_opts.topicName, will_opts.message, will_opts.qos, will_opts.retained);
-    printf("MQTT: keepAlive=%ds (LWT fires after ~%ds on ungraceful disconnect)\n",
+    LOG("MQTT: keepAlive=%ds (LWT fires after ~%ds on ungraceful disconnect)\n",
            conn_opts.keepAliveInterval, (int)(conn_opts.keepAliveInterval * 1.5));
-    fflush(stdout);
 
     /* Initiate async connection */
-    printf("MQTT: Initiating connection...\n");
-    fflush(stdout);
+    LOG("MQTT: Initiating connection...\n");
     rc = MQTTAsync_connect(g_mqtt_client, &conn_opts);
     if (rc != MQTTASYNC_SUCCESS) {
-        printf("MQTT: Failed to start connect, rc=%d\n", rc);
-        fflush(stdout);
+        LOG("MQTT: Failed to start connect, rc=%d\n", rc);
         MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
         return -1;
     }
 
-    printf("MQTT: Connection initiated (auto-reconnect: %d-%ds)\n", 
+    LOG("MQTT: Connection initiated (auto-reconnect: %d-%ds)\n", 
            MQTT_RECONNECT_MIN_DELAY, MQTT_RECONNECT_MAX_DELAY);
-    fflush(stdout);
 
     return 0;
 }
@@ -1374,8 +1331,7 @@ static void mqtt_deinit(void) {
         if (connected) {
             /* Publish offline state before disconnect */
             mqtt_publish_state("OFF");
-            printf("MQTT: Disconnecting...\n");
-            fflush(stdout);
+            LOG("MQTT: Disconnecting...\n");
             
             MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
             opts.timeout = MQTT_TIMEOUT;
@@ -1387,15 +1343,13 @@ static void mqtt_deinit(void) {
         }
         MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
-        printf("MQTT: Client destroyed\n");
-        fflush(stdout);
+        LOG("MQTT: Client destroyed\n");
     }
 }
 
 static void get_mac_address(void) {
     unsigned char mac[6] = {0, 0, 0, 0, 0, 0};
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    
     if (sock >= 0) {
         struct ifreq ifr;
         memset(&ifr, 0, sizeof(ifr));
@@ -1416,8 +1370,7 @@ static void get_mac_address(void) {
     snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%02X%02X%02X%02X%02X%02X/state",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     
-    printf("MQTT: State topic: %s\n", g_mqtt_state_topic);
-    fflush(stdout);
+    LOG("MQTT: State topic: %s\n", g_mqtt_state_topic);
 }
 
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
@@ -1426,14 +1379,12 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     pthread_mutex_unlock(&g_mqtt_mutex);
 
     if (!g_mqtt_client) {
-        printf("MQTT: No client, skipping publish\n");
-        fflush(stdout);
+        LOG("MQTT: No client, skipping publish\n");
         return;
     }
 
     if (!connected) {
-        printf("MQTT: Not connected, message queued for when connection resumes\n");
-        fflush(stdout);
+        LOG("MQTT: Not connected, message queued for when connection resumes\n");
         /* With auto-reconnect, we can still attempt to publish - 
            it will be queued internally if supported, or fail gracefully */
     }
@@ -1461,11 +1412,10 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
 
     int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_topic, &msg, NULL);
     if (rc == MQTTASYNC_SUCCESS) {
-        printf("MQTT: Publish queued payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
+        LOG("MQTT: Publish queued payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
     } else {
-        printf("MQTT: Failed to queue publish, rc=%d\n", rc);
+        LOG("MQTT: Failed to queue publish, rc=%d\n", rc);
     }
-    fflush(stdout);
 }
 
 /* Queue a tag ID for publishing from main thread */
@@ -1488,8 +1438,7 @@ static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
         g_mqtt_queue[g_mqtt_queue_head].protocol = protocol;
         g_mqtt_queue_head = next_head;
     } else {
-        printf("MQTT: Queue full, dropping message\n");
-        fflush(stdout);
+        LOG("MQTT: Queue full, dropping message\n");
     }
     pthread_mutex_unlock(&g_mqtt_queue_mutex);
 }
@@ -1568,10 +1517,10 @@ int main(int argc, char *argv[]) {
             lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
             lv_indev_set_read_cb(g_touch_indev, touch_read_cb);
             lv_indev_set_display(g_touch_indev, g_display);  /* Associate with display */
-            printf("Touch input initialized\n");
+            LOG("Touch input initialized\n");
         }
     } else {
-        printf("Touch: touch_init() FAILED\n");
+        LOG("Touch: touch_init() FAILED\n");
     }
 
     create_ui();
@@ -1584,8 +1533,7 @@ int main(int argc, char *argv[]) {
 
     /* Initialize MQTT client */
     if (mqtt_init() != 0) {
-        printf("Warning: MQTT client initialization failed, continuing without MQTT\n");
-        fflush(stdout);
+        LOG("Warning: Failed to initialize MQTT client, continuing without MQTT\n");
     }
 
     /* Start NFC thread */
@@ -1613,8 +1561,7 @@ int main(int argc, char *argv[]) {
             }
             lv_obj_invalidate(lv_screen_active());
             lv_refr_now(g_display);  /* Force immediate refresh */
-            printf("UI: Refreshed from main loop\n");
-            fflush(stdout);
+            LOG("UI: Refreshed from main loop\n");
         }
         
         /* Explicitly poll touch input */
