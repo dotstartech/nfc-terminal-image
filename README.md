@@ -105,9 +105,14 @@ This configures Buildroot with the external tree and builds everything.
 sudo ./buildroot/output/host/bin/rpiboot
 
 # Wait for eMMC to appear as mass storage, then:
+# IMPORTANT: Unmount any auto-mounted partitions first!
+sudo umount /dev/sdX1 /dev/sdX2 2>/dev/null || true
 sudo dd if=buildroot/output/images/nfc-terminal.img of=/dev/sdX bs=4M status=progress
 sync
 ```
+
+> **Note**: The `./build.sh flash` command will automatically detect and offer to unmount any mounted partitions.
+
 Alternatively Raspberry Pi Imager can be used to flash the image.
 
 4. Disconnect IO board USB from host
@@ -328,7 +333,7 @@ The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operatio
 | Broker | tcp://192.168.188.50:1883 |
 | Client ID | nfc-terminal |
 | Protocol | MQTT 5.0 (async) |
-| QoS | 1 |
+| QoS | 2 |
 | Auto-Reconnect | Enabled (1-60s backoff) |
 
 ### Topics

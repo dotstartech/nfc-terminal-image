@@ -180,6 +180,32 @@ case "${1:-build}" in
             exit 1
         fi
         
+        # Check for mounted partitions on the device
+        MOUNTED_PARTS=$(lsblk -n -o MOUNTPOINT "${DEVICE}" 2>/dev/null | grep -v '^$' || true)
+        if [ -n "${MOUNTED_PARTS}" ]; then
+            print_warning "Partitions on ${DEVICE} are currently mounted:"
+            lsblk -o NAME,SIZE,MOUNTPOINT "${DEVICE}"
+            echo
+            read -p "Unmount all partitions and continue? (y/N) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                print_status "Unmounting partitions..."
+                for part in $(lsblk -n -o NAME "${DEVICE}" | tail -n +2); do
+                    sudo umount "/dev/${part}" 2>/dev/null || true
+                done
+                # Verify unmount succeeded
+                STILL_MOUNTED=$(lsblk -n -o MOUNTPOINT "${DEVICE}" 2>/dev/null | grep -v '^$' || true)
+                if [ -n "${STILL_MOUNTED}" ]; then
+                    print_error "Failed to unmount all partitions. Aborting."
+                    exit 1
+                fi
+                print_status "All partitions unmounted."
+            else
+                print_error "Cannot flash while partitions are mounted. Aborting."
+                exit 1
+            fi
+        fi
+        
         print_warning "This will ERASE all data on ${DEVICE}!"
         read -p "Are you sure? (y/N) " -n 1 -r
         echo
