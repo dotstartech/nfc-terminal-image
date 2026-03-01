@@ -4,6 +4,10 @@
 # Build outputs
 output/
 
+# Desktop build outputs
+package/nfc-lvgl-app/src/desktop_build/
+package/nfc-lvgl-app/src/lvgl/
+
 # Temporary files
 *.swp
 *.tmp

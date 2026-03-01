@@ -1,0 +1,82 @@
+# Makefile for nfc-lvgl-app DESKTOP BUILD
+# Builds LVGL + application with SDL2 for x86_64 desktop testing
+#
+# Prerequisites (Ubuntu/Debian):
+#   sudo apt install build-essential libsdl2-dev
+#
+# Usage:
+#   make -f Makefile.desktop
+#   ./desktop_build/nfc-lvgl-app-desktop
+
+CC = gcc
+CFLAGS = -O2 -g -Wall -Wextra -DDESKTOP_BUILD
+LDFLAGS =
+
+# Directories
+LVGL_DIR = $(CURDIR)/lvgl
+
+# Include paths
+INCLUDES = -I$(CURDIR) \
+           -I$(LVGL_DIR) \
+           -DLV_CONF_INCLUDE_SIMPLE \
+           $(shell pkg-config --cflags sdl2)
+
+# Libraries (no MQTT for desktop build)
+LIBS = -lpthread -lm $(shell pkg-config --libs sdl2)
+
+# Find ALL LVGL source files recursively
+LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
+
+# SDL driver sources from LVGL
+SDL_DRV_SRC = $(wildcard $(LVGL_DIR)/src/drivers/sdl/*.c)
+
+# Application source
+APP_SRC = main.c
+
+# Object files (in desktop_build subdirectory to avoid conflicts)
+BUILD_DIR = desktop_build
+LVGL_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(LVGL_SRC))
+SDL_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SDL_DRV_SRC))
+APP_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(APP_SRC))
+
+# Target
+TARGET = $(BUILD_DIR)/nfc-lvgl-app-desktop
+
+.PHONY: all clean lvgl-download
+
+all: lvgl-download $(TARGET)
+
+# Download LVGL if not present
+lvgl-download:
+	@if [ ! -d "$(LVGL_DIR)" ]; then \
+		echo "Downloading LVGL v9.2.2..."; \
+		wget -q -O lvgl.tar.gz https://github.com/lvgl/lvgl/archive/refs/tags/v9.2.2.tar.gz; \
+		mkdir -p $(LVGL_DIR); \
+		tar -xzf lvgl.tar.gz -C $(LVGL_DIR) --strip-components=1; \
+		rm lvgl.tar.gz; \
+		echo "LVGL downloaded."; \
+	fi
+
+# Create build directories
+$(BUILD_DIR):
+	@mkdir -p $(BUILD_DIR)
+
+# Compile LVGL objects
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(TARGET): $(LVGL_OBJ) $(APP_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+	@echo ""
+	@echo "Desktop build complete: $(TARGET)"
+	@echo "Run with: ./$(TARGET)"
+
+clean:
+	rm -rf $(BUILD_DIR) $(TARGET)
+
+# Helper to show SDL2 status
+check-deps:
+	@echo "Checking dependencies..."
+	@pkg-config --exists sdl2 && echo "  SDL2: OK" || echo "  SDL2: MISSING (install with: sudo apt install libsdl2-dev)"
+	@pkg-config --exists libpaho-mqtt3a && echo "  Paho MQTT: OK" || echo "  Paho MQTT: MISSING (install with: sudo apt install libpaho-mqtt-dev)"

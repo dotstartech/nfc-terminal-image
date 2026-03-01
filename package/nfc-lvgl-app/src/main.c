@@ -8,18 +8,29 @@
 #include <time.h>
 #include <fcntl.h>
 #include <errno.h>
+
+#ifdef DESKTOP_BUILD
+#include <SDL2/SDL.h>
+#else
 #include <linux/fb.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#endif
+
 #include <sys/socket.h>
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 
 #include "lvgl/lvgl.h"
+
+#ifdef DESKTOP_BUILD
+#include "linux_nfc_api_stub.h"
+#else
 #include "linux_nfc_api.h"
 #include "MQTTAsync.h"
+#endif
 
 #define DISPLAY_WIDTH   720
 #define DISPLAY_HEIGHT  720
@@ -185,6 +196,7 @@ static lv_obj_t *g_btn_theme_light = NULL;
 
 /* Settings modal */
 static lv_obj_t *g_settings_modal = NULL;
+static lv_obj_t *g_settings_close_btn = NULL;
 static lv_obj_t *g_settings_title = NULL;
 static lv_obj_t *g_settings_lbl_mac = NULL;
 static lv_obj_t *g_settings_lbl_ip = NULL;
@@ -200,6 +212,19 @@ static volatile int g_running = 1;
 static volatile int g_nfc_ready = 0;
 static volatile int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
 
+#ifdef DESKTOP_BUILD
+/* SDL display */
+static SDL_Window *g_sdl_window = NULL;
+static SDL_Renderer *g_sdl_renderer = NULL;
+static SDL_Texture *g_sdl_texture = NULL;
+static lv_display_t *g_display = NULL;
+
+/* SDL mouse input */
+static lv_indev_t *g_touch_indev = NULL;
+static int g_mouse_x = 0;
+static int g_mouse_y = 0;
+static int g_mouse_pressed = 0;
+#else
 /* Framebuffer */
 static int g_fb_fd = -1;
 static uint16_t *g_fb_mem = NULL;  /* RGB565 framebuffer memory */
@@ -218,7 +243,11 @@ static int g_touch_pressed = 0;
 static MQTTAsync g_mqtt_client = NULL;
 static volatile int g_mqtt_connected = 0;
 static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
+
+#ifndef DESKTOP_BUILD
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
 static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
 
@@ -243,6 +272,7 @@ static void mqtt_publish_state(const char *state);
 static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response);
 static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response);
 static void mqtt_on_connected(void *context, char *cause);
+#endif /* !DESKTOP_BUILD */
 
 /*====================
    TICK FUNCTION
@@ -260,6 +290,7 @@ uint32_t custom_tick_get(void) {
 /*====================
    CONSOLE CONTROL
  *====================*/
+#ifndef DESKTOP_BUILD
 static void clear_console(void) {
     /* Clear the console and hide cursor */
     printf("\033[2J");      /* Clear screen */
@@ -483,6 +514,157 @@ static void touch_deinit(void) {
     }
 }
 
+#else /* DESKTOP_BUILD */
+
+/*====================
+   SDL DISPLAY & INPUT
+ *====================*/
+static int g_flush_count = 0;
+
+static void sdl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    g_flush_count++;
+    
+    if (!g_sdl_texture) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    void *pixels;
+    int pitch;
+    SDL_Rect rect = {
+        .x = area->x1,
+        .y = area->y1,
+        .w = area->x2 - area->x1 + 1,
+        .h = area->y2 - area->y1 + 1
+    };
+    
+    if (SDL_LockTexture(g_sdl_texture, &rect, &pixels, &pitch) == 0) {
+        uint16_t *src = (uint16_t *)px_map;
+        uint8_t *dst = (uint8_t *)pixels;
+        int src_stride = rect.w;
+        
+        for (int y = 0; y < rect.h; y++) {
+            /* Convert RGB565 to ARGB8888 */
+            for (int x = 0; x < rect.w; x++) {
+                uint16_t px = src[x];
+                uint8_t r = ((px >> 11) & 0x1F) * 255 / 31;
+                uint8_t g = ((px >> 5) & 0x3F) * 255 / 63;
+                uint8_t b = (px & 0x1F) * 255 / 31;
+                
+                dst[x * 4 + 0] = b;
+                dst[x * 4 + 1] = g;
+                dst[x * 4 + 2] = r;
+                dst[x * 4 + 3] = 255;
+            }
+            src += src_stride;
+            dst += pitch;
+        }
+        
+        SDL_UnlockTexture(g_sdl_texture);
+    }
+    
+    SDL_RenderCopy(g_sdl_renderer, g_sdl_texture, NULL, NULL);
+    SDL_RenderPresent(g_sdl_renderer);
+    
+    lv_display_flush_ready(disp);
+}
+
+static int sdl_init(void) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return -1;
+    }
+    
+    g_sdl_window = SDL_CreateWindow(
+        "NFC Terminal",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        DISPLAY_WIDTH, DISPLAY_HEIGHT,
+        SDL_WINDOW_SHOWN
+    );
+    
+    if (!g_sdl_window) {
+        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return -1;
+    }
+    
+    g_sdl_renderer = SDL_CreateRenderer(g_sdl_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_sdl_renderer) {
+        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(g_sdl_window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    g_sdl_texture = SDL_CreateTexture(
+        g_sdl_renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        DISPLAY_WIDTH, DISPLAY_HEIGHT
+    );
+    
+    if (!g_sdl_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(g_sdl_renderer);
+        SDL_DestroyWindow(g_sdl_window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    return 0;
+}
+
+static void sdl_deinit(void) {
+    if (g_sdl_texture) {
+        SDL_DestroyTexture(g_sdl_texture);
+        g_sdl_texture = NULL;
+    }
+    if (g_sdl_renderer) {
+        SDL_DestroyRenderer(g_sdl_renderer);
+        g_sdl_renderer = NULL;
+    }
+    if (g_sdl_window) {
+        SDL_DestroyWindow(g_sdl_window);
+        g_sdl_window = NULL;
+    }
+    SDL_Quit();
+}
+
+static void sdl_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_QUIT:
+                g_running = 0;
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    g_mouse_pressed = 1;
+                    g_mouse_x = event.button.x;
+                    g_mouse_y = event.button.y;
+                }
+                break;
+            case SDL_MOUSEBUTTONUP:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    g_mouse_pressed = 0;
+                }
+                break;
+            case SDL_MOUSEMOTION:
+                g_mouse_x = event.motion.x;
+                g_mouse_y = event.motion.y;
+                break;
+        }
+    }
+    
+    data->point.x = g_mouse_x;
+    data->point.y = g_mouse_y;
+    data->state = g_mouse_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+#endif /* DESKTOP_BUILD */
+
 /*====================
    UI HELPERS
  *====================*/
@@ -572,6 +754,7 @@ static const char* protocol_to_string(uint8_t protocol) {
     }
 }
 
+#ifndef DESKTOP_BUILD
 static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
     size_t pos = 0;
     for (unsigned int i = 0; i < tag->uid_length && pos < buflen - 3; i++) {
@@ -681,6 +864,7 @@ static void *nfc_thread(void *arg) {
 
     return NULL;
 }
+#endif /* !DESKTOP_BUILD */
 
 /*====================
    UI SETUP
@@ -731,6 +915,9 @@ static void apply_theme(void) {
     if (g_settings_modal) {
         lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_modal, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    if (g_settings_close_btn) {
+        lv_obj_set_style_bg_color(g_settings_close_btn, THEME_MODAL_BG, LV_PART_MAIN);
     }
     if (g_settings_title) {
         lv_obj_set_style_text_color(g_settings_title, THEME_TEXT, LV_PART_MAIN);
@@ -924,12 +1111,12 @@ static void btn_press_effect_cb(lv_event_t *e) {
         lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        LOG("UI: Button PRESSED - color changed to PRESSED\n");
+        /*LOG("UI: Button PRESSED - color changed to PRESSED\n");*/
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        LOG("UI: Button RELEASED - color changed to GREY\n");
+        /*LOG("UI: Button RELEASED - color changed to GREY\n");*/
     }
 }
 
@@ -1068,7 +1255,7 @@ static void create_ui(void) {
     lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 34);
 
     /* Settings button (hamburger menu) in top right corner */
     g_btn_settings = lv_button_create(g_landing_container);
@@ -1263,9 +1450,10 @@ static void create_ui(void) {
     lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 10);
 
     /* Close button (X) */
-    lv_obj_t *btn_close = lv_button_create(g_settings_modal);
+    g_settings_close_btn = lv_button_create(g_settings_modal);
+    lv_obj_t *btn_close = g_settings_close_btn;
     lv_obj_set_size(btn_close, 84, 84);
-    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 16, -16);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 18, -18);
     lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
@@ -1284,7 +1472,7 @@ static void create_ui(void) {
 
     /* Device info labels */
     const int info_start_y = 76;
-    const int info_line_height = 35;
+    const int info_line_height = 40;
 
     g_settings_lbl_mac = lv_label_create(g_settings_modal);
     lv_label_set_text(g_settings_lbl_mac, "MAC: --");
@@ -1377,6 +1565,7 @@ static void create_ui(void) {
     LOG("UI: UI creation complete.\n");
 }
 
+#ifndef DESKTOP_BUILD
 /*====================
    MQTT CLIENT (Async with Auto-Reconnect)
  *====================*/
@@ -1672,6 +1861,7 @@ static void mqtt_process_queue(void) {
         mqtt_publish_tag_event(tag_id, protocol);
     }
 }
+#endif /* !DESKTOP_BUILD */
 
 /*====================
    SIGNAL HANDLER
@@ -1687,12 +1877,46 @@ static void signal_handler(int sig) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+#ifndef DESKTOP_BUILD
     pthread_t nfc_tid;
+#endif
 
     /* Setup signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+#ifdef DESKTOP_BUILD
+    /* Initialize SDL */
+    if (sdl_init() != 0) {
+        fprintf(stderr, "Failed to initialize SDL\n");
+        return 1;
+    }
+
+    lv_init();
+
+    /* Create display */
+    g_display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    if (!g_display) {
+        fprintf(stderr, "Failed to create display\n");
+        sdl_deinit();
+        return 1;
+    }
+
+    /* Setup draw buffers */
+    static uint8_t buf1[DISPLAY_WIDTH * 40 * 2];  /* 40 lines * 2 bytes/pixel (RGB565) */
+    static uint8_t buf2[DISPLAY_WIDTH * 40 * 2];
+    lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(g_display, sdl_flush_cb);
+
+    /* Initialize mouse input */
+    g_touch_indev = lv_indev_create();
+    if (g_touch_indev) {
+        lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(g_touch_indev, sdl_mouse_read_cb);
+        lv_indev_set_display(g_touch_indev, g_display);
+        LOG("Mouse input initialized\n");
+    }
+#else
     /* Clear console and hide cursor */
     clear_console();
 
@@ -1732,6 +1956,7 @@ int main(int argc, char *argv[]) {
     } else {
         LOG("Touch: touch_init() FAILED\n");
     }
+#endif
 
     create_ui();
 
@@ -1739,6 +1964,7 @@ int main(int argc, char *argv[]) {
     lv_obj_invalidate(lv_screen_active());
     lv_refr_now(g_display);
 
+#ifndef DESKTOP_BUILD
     get_mac_address();
 
     /* Initialize MQTT client */
@@ -1754,11 +1980,16 @@ int main(int argc, char *argv[]) {
         restore_console();
         return 1;
     }
+#else
+    LOG("Desktop build - NFC and MQTT disabled\n");
+#endif
 
     /* Main loop */
     while (g_running) {
+#ifndef DESKTOP_BUILD
         /* Process MQTT queue from main thread */
         mqtt_process_queue();
+#endif
 
         pthread_mutex_lock(&g_ui_mutex);
         
@@ -1785,11 +2016,15 @@ int main(int argc, char *argv[]) {
     }
 
     /* Cleanup */
+#ifdef DESKTOP_BUILD
+    sdl_deinit();
+#else
     pthread_join(nfc_tid, NULL);
     mqtt_deinit();
     touch_deinit();
     fb_deinit();
     restore_console();
+#endif
 
     return 0;
 }

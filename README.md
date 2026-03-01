@@ -89,6 +89,7 @@ This configures Buildroot with the external tree and builds everything.
 | `./build.sh rebuild-driver` | Rebuild only the ST7703 display driver |
 | `./build.sh flash /dev/sdX` | Flash built image to SD card or eMMC device |
 | `./build.sh rpiboot` | Start rpiboot for CM4 eMMC programming mode |
+| `./build.sh desktop-build` | Build nfc-lvgl-app for desktop (x86_64) with SDL2 for UI testing |
 
 4. **Output files** will be in `buildroot/output/images/`:
    - `nfc-terminal.img` - Complete bootable image

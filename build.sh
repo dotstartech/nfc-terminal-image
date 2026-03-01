@@ -251,6 +251,19 @@ case "${1:-build}" in
         fi
         ;;
 
+    desktop-build)
+        print_status "Building nfc-lvgl-app for desktop (x86_64) with SDL2..."
+        APP_DIR="${SCRIPT_DIR}/package/nfc-lvgl-app/src"
+        if [ ! -f "${APP_DIR}/Makefile.desktop" ]; then
+            print_error "Makefile.desktop not found in ${APP_DIR}"
+            exit 1
+        fi
+        cd "${APP_DIR}"
+        make -f Makefile.desktop -j$(nproc)
+        print_status "Desktop build complete!"
+        print_status "Binary: ${APP_DIR}/desktop_build/nfc-lvgl-app-desktop"
+        ;;
+
     *)
         echo "NFC Terminal Build Script"
         echo ""
@@ -269,5 +282,6 @@ case "${1:-build}" in
         echo "  savedefconfig   - Save current config to defconfig file"
         echo "  flash [-y] <device>  - Flash image to SD card or eMMC device (-y = no prompts)"
         echo "  rpiboot         - Start rpiboot for CM4 eMMC programming"
+        echo "  desktop-build   - Build nfc-lvgl-app for desktop (x86_64) with SDL2"
         ;;
 esac
