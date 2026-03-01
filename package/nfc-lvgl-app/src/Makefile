@@ -22,7 +22,10 @@ LIBS = -lnfc_nci_linux -lpaho-mqtt3a -lpthread -lm
 LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 
 # Application source
-APP_SRC = main.c
+APP_SRC = main.c \
+         fonts/fa_solid_48.c \
+         fonts/fa_regular_48.c \
+         logo_short.c
 
 # Object files
 LVGL_OBJ = $(LVGL_SRC:.c=.o)

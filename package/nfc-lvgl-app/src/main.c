@@ -25,6 +25,21 @@
 
 #include "lvgl/lvgl.h"
 
+/* Font Awesome icon fonts */
+LV_FONT_DECLARE(fa_solid_48);
+LV_FONT_DECLARE(fa_regular_48);
+
+/* Logo image */
+LV_IMAGE_DECLARE(logo_short);
+
+/* Font Awesome Unicode codepoints (UTF-8 encoded) */
+#define FA_ICON_BARS           "\xEF\x83\x89"  /* U+F0C9 - hamburger menu */
+#define FA_ICON_XMARK          "\xEF\x80\x8D"  /* U+F00D - close X */
+#define FA_ICON_MOON           "\xEF\x86\x86"  /* U+F186 - moon (dark theme) */
+#define FA_ICON_SUN            "\xEF\x86\x85"  /* U+F185 - sun (light theme) */
+#define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast) */
+#define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
+
 #ifdef DESKTOP_BUILD
 #include "linux_nfc_api_stub.h"
 #else
@@ -181,7 +196,6 @@ static const char *g_role_names[NUM_ROLES] = {"Role A", "Role B", "Role C", "Rol
 static role_t g_roles[NUM_ROLES] = {0};
 static lv_obj_t *g_status_label = NULL;
 static lv_obj_t *g_header = NULL;
-static lv_obj_t *g_touch_debug_label = NULL;  /* Debug: show touch coords */
 
 /* Landing page UI */
 static lv_obj_t *g_landing_container = NULL;
@@ -905,7 +919,11 @@ static void apply_theme(void) {
         if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
     }
     if (g_btn_settings) {
-        lv_obj_set_style_bg_color(g_btn_settings, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
+        /* Update hamburger icon color - grey for Latte, white for others */
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_settings, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_hex(0x6c7086) : lv_color_white(), LV_PART_MAIN);
     }
     if (g_btn_back) {
         lv_obj_set_style_bg_color(g_btn_back, THEME_BTN_DEFAULT, LV_PART_MAIN);
@@ -918,6 +936,10 @@ static void apply_theme(void) {
     }
     if (g_settings_close_btn) {
         lv_obj_set_style_bg_color(g_settings_close_btn, THEME_MODAL_BG, LV_PART_MAIN);
+        /* Update X icon color - grey for Latte, white for others */
+        lv_obj_t *lbl = lv_obj_get_child(g_settings_close_btn, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_hex(0x6c7086) : lv_color_white(), LV_PART_MAIN);
     }
     if (g_settings_title) {
         lv_obj_set_style_text_color(g_settings_title, THEME_TEXT, LV_PART_MAIN);
@@ -1250,31 +1272,37 @@ static void create_ui(void) {
     lv_obj_set_style_bg_opa(g_landing_container, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_SCROLLABLE);  /* Disable scrolling */
 
+    /* Logo image in top left corner */
+    lv_obj_t *logo_img = lv_image_create(g_landing_container);
+    lv_image_set_src(logo_img, &logo_short);
+    lv_image_set_scale(logo_img, 156);
+    lv_obj_align(logo_img, LV_ALIGN_TOP_LEFT, -16, -20);
+
     /* Landing page title */
     g_landing_title = lv_label_create(g_landing_container);
     lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_36, LV_PART_MAIN);
     lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 34);
 
     /* Settings button (hamburger menu) in top right corner */
     g_btn_settings = lv_button_create(g_landing_container);
     lv_obj_set_size(g_btn_settings, 88, 88);
     lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -10, 10);
-    lv_obj_set_style_bg_color(g_btn_settings, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_settings, 12, LV_PART_MAIN);
     lv_obj_set_style_border_width(g_btn_settings, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_width(g_btn_settings, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(g_btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *lbl_settings = lv_label_create(g_btn_settings);
-    lv_label_set_text(lbl_settings, LV_SYMBOL_LIST);  /* Hamburger menu icon */
+    lv_label_set_text(lbl_settings, FA_ICON_BARS);
     lv_obj_set_style_text_color(lbl_settings, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_settings, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_settings, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_settings);
 
     /* Landing page buttons - vertically centered */
@@ -1374,9 +1402,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_back, back_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_back = lv_label_create(g_btn_back);
-    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);  /* FA f08b placeholder */
+    lv_label_set_text(lbl_back, FA_ICON_EXIT);
     lv_obj_set_style_text_color(lbl_back, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_back, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_back, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_back);
 
     /* Roles container - holds all role buttons */
@@ -1419,13 +1447,6 @@ static void create_ui(void) {
         lv_obj_center(g_roles[i].label);
     }
 
-    /* Touch debug label at bottom (hidden by default, shows touch status) */
-    g_touch_debug_label = lv_label_create(scr);
-    lv_label_set_text(g_touch_debug_label, "");
-    lv_obj_set_style_text_color(g_touch_debug_label, lv_color_hex(0x808080), LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_touch_debug_label, &lv_font_montserrat_18, LV_PART_MAIN);
-    lv_obj_align(g_touch_debug_label, LV_ALIGN_BOTTOM_MID, 0, -11);
-
     /*========================================
        SETTINGS MODAL
      *========================================*/
@@ -1465,9 +1486,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_close = lv_label_create(btn_close);
-    lv_label_set_text(lbl_close, LV_SYMBOL_CLOSE);
+    lv_label_set_text(lbl_close, FA_ICON_XMARK);
     lv_obj_set_style_text_color(lbl_close, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_close, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_close, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_close);
 
     /* Device info labels */
@@ -1512,9 +1533,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
-    lv_label_set_text(lbl_contrast, LV_SYMBOL_IMAGE);  /* Contrast-like icon */
+    lv_label_set_text(lbl_contrast, FA_ICON_CIRCLE_HALF);
     lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_contrast, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_contrast, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_contrast);
 
     /* Button 2: Dark (Mocha) */
@@ -1532,9 +1553,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
-    lv_label_set_text(lbl_dark, LV_SYMBOL_EYE_CLOSE);  /* Moon-like (closed eye) */
+    lv_label_set_text(lbl_dark, FA_ICON_MOON);
     lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_dark, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dark, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_dark);
 
     /* Button 3: Light (Latte) */
@@ -1552,9 +1573,9 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
-    lv_label_set_text(lbl_light, LV_SYMBOL_EYE_OPEN);  /* Sun-like (open eye) */
+    lv_label_set_text(lbl_light, FA_ICON_SUN);
     lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_light, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
     lv_obj_center(lbl_light);
 
     LOG("UI: Settings modal created\n");

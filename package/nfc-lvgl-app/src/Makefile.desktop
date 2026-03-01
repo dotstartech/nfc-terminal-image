@@ -31,7 +31,10 @@ LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 SDL_DRV_SRC = $(wildcard $(LVGL_DIR)/src/drivers/sdl/*.c)
 
 # Application source
-APP_SRC = main.c
+APP_SRC = main.c \
+         fonts/fa_solid_48.c \
+         fonts/fa_regular_48.c \
+         logo_short.c
 
 # Object files (in desktop_build subdirectory to avoid conflicts)
 BUILD_DIR = desktop_build
