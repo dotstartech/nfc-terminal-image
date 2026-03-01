@@ -186,11 +186,11 @@ case "${1:-build}" in
             print_warning "Partitions on ${DEVICE} are currently mounted:"
             lsblk -o NAME,SIZE,MOUNTPOINT "${DEVICE}"
             echo
-            read -p "Unmount all partitions and continue? (y/N) " -n 1 -r
+            read -p "Unmount all partitions (required for flashing) and continue? (y/N) " -n 1 -r
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 print_status "Unmounting partitions..."
-                for part in $(lsblk -n -o NAME "${DEVICE}" | tail -n +2); do
+                for part in $(lsblk -ln -o NAME "${DEVICE}" | tail -n +2); do
                     sudo umount "/dev/${part}" 2>/dev/null || true
                 done
                 # Verify unmount succeeded
