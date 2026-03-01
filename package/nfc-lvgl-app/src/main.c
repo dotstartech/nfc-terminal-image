@@ -1,13 +1,3 @@
-/**
- * @file main.c
- * NFC Demo Applications with LVGL UI
- *
- * Check-in/Check-out App Features:
- * - 'Role A', 'Role B', etc. buttons (grey/yellow toggle)
- * - NFC tag detection displays tag ID
- * - Check-in/check-out state machine per role
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +15,7 @@
 #include <sys/socket.h>
 #include <net/if.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 
 #include "lvgl/lvgl.h"
 #include "linux_nfc_api.h"
@@ -732,6 +723,9 @@ static void apply_theme(void) {
     if (g_btn_settings) {
         lv_obj_set_style_bg_color(g_btn_settings, THEME_BTN_DEFAULT, LV_PART_MAIN);
     }
+    if (g_btn_back) {
+        lv_obj_set_style_bg_color(g_btn_back, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
     
     /* Settings modal */
     if (g_settings_modal) {
@@ -939,6 +933,12 @@ static void btn_press_effect_cb(lv_event_t *e) {
     }
 }
 
+/* Press effect callback for modal close button - no color change, just stays modal bg */
+static void modal_close_btn_press_effect_cb(lv_event_t *e) {
+    (void)e;
+    /* No visual press effect for X button - keeps modal background color */
+}
+
 /* Landing page button callbacks */
 static void landing_btn_simple_checkin_cb(lv_event_t *e) {
     (void)e;
@@ -967,29 +967,34 @@ static void back_btn_cb(lv_event_t *e) {
 
 /* Get IP address of network interface */
 static void get_ip_address(char *buf, size_t buflen) {
-    struct ifreq ifr;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
+    struct ifaddrs *ifaddr, *ifa;
+    
+    if (getifaddrs(&ifaddr) == -1) {
         snprintf(buf, buflen, "N/A");
         return;
     }
     
-    /* Try common interface names */
-    const char *interfaces[] = {"eth0", "end0", "enp0s3", "wlan0", NULL};
-    for (int i = 0; interfaces[i] != NULL; i++) {
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, interfaces[i], IFNAMSIZ - 1);
+    /* Walk through linked list of interfaces */
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
         
-        if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
-            struct sockaddr_in *addr = (struct sockaddr_in *)&ifr.ifr_addr;
-            inet_ntop(AF_INET, &addr->sin_addr, buf, buflen);
-            close(fd);
-            return;
-        }
+        /* Only interested in IPv4 addresses */
+        if (ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+        
+        /* Skip loopback interface */
+        if (strcmp(ifa->ifa_name, "lo") == 0)
+            continue;
+        
+        struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+        inet_ntop(AF_INET, &addr->sin_addr, buf, buflen);
+        freeifaddrs(ifaddr);
+        return;
     }
     
+    freeifaddrs(ifaddr);
     snprintf(buf, buflen, "N/A");
-    close(fd);
 }
 
 /* Update settings modal info labels */
@@ -1063,12 +1068,12 @@ static void create_ui(void) {
     lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 32);
 
     /* Settings button (hamburger menu) in top right corner */
     g_btn_settings = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_settings, 84, 84);
-    lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -20, 20);
+    lv_obj_set_size(g_btn_settings, 88, 88);
+    lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -10, 10);
     lv_obj_set_style_bg_color(g_btn_settings, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_settings, 12, LV_PART_MAIN);
@@ -1090,7 +1095,7 @@ static void create_ui(void) {
     const int landing_btn_height = 80;
     const int landing_btn_gap = 20;
     const int landing_total_height = 3 * landing_btn_height + 2 * landing_btn_gap;
-    const int landing_start_y = (720 - landing_total_height) / 2 - 20;
+    const int landing_start_y = (720 - landing_total_height) / 2 - 4;
 
     /* Button 1: Check-in/Check-out */
     g_btn_simple_checkin = lv_button_create(g_landing_container);
@@ -1238,8 +1243,8 @@ static void create_ui(void) {
        SETTINGS MODAL
      *========================================*/
     g_settings_modal = lv_obj_create(scr);
-    lv_obj_set_size(g_settings_modal, 640, 560);
-    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 40);  /* 40px down from center */
+    lv_obj_set_size(g_settings_modal, 700, 600);
+    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 48);  /* 48px down from center */
     lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_settings_modal, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_modal, 16, LV_PART_MAIN);
@@ -1259,22 +1264,22 @@ static void create_ui(void) {
 
     /* Close button (X) */
     lv_obj_t *btn_close = lv_button_create(g_settings_modal);
-    lv_obj_set_size(btn_close, 64, 64);
-    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_obj_set_style_bg_color(btn_close, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_size(btn_close, 84, 84);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 16, -16);
+    lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
     lv_obj_set_style_border_width(btn_close, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_width(btn_close, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_close = lv_label_create(btn_close);
     lv_label_set_text(lbl_close, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(lbl_close, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_close, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_close, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_center(lbl_close);
 
     /* Device info labels */
