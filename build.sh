@@ -167,11 +167,27 @@ case "${1:-build}" in
         ;;
 
     flash)
-        if [ -z "$2" ]; then
-            print_error "Usage: $0 flash /dev/sdX"
+        # Parse options
+        FORCE_YES=false
+        DEVICE=""
+        shift  # Remove 'flash' from arguments
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -y)
+                    FORCE_YES=true
+                    shift
+                    ;;
+                *)
+                    DEVICE="$1"
+                    shift
+                    ;;
+            esac
+        done
+        
+        if [ -z "$DEVICE" ]; then
+            print_error "Usage: $0 flash [-y] /dev/sdX"
             exit 1
         fi
-        DEVICE="$2"
         IMAGE="${BUILDROOT_DIR}/output/images/nfc-terminal.img"
         
         if [ ! -f "${IMAGE}" ]; then
@@ -186,8 +202,12 @@ case "${1:-build}" in
             print_warning "Partitions on ${DEVICE} are currently mounted:"
             lsblk -o NAME,SIZE,MOUNTPOINT "${DEVICE}"
             echo
-            read -p "Unmount all partitions (required for flashing) and continue? (y/N) " -n 1 -r
-            echo
+            if [ "$FORCE_YES" = true ]; then
+                REPLY="y"
+            else
+                read -p "Unmount all partitions (required for flashing) and continue? (y/N) " -n 1 -r
+                echo
+            fi
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 print_status "Unmounting partitions..."
                 for part in $(lsblk -ln -o NAME "${DEVICE}" | tail -n +2); do
@@ -207,8 +227,12 @@ case "${1:-build}" in
         fi
         
         print_warning "This will ERASE all data on ${DEVICE}!"
-        read -p "Are you sure? (y/N) " -n 1 -r
-        echo
+        if [ "$FORCE_YES" = true ]; then
+            REPLY="y"
+        else
+            read -p "Are you sure? (y/N) " -n 1 -r
+            echo
+        fi
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             print_status "Flashing image to ${DEVICE}..."
             sudo dd if="${IMAGE}" of="${DEVICE}" bs=4M status=progress conv=fsync
@@ -243,7 +267,7 @@ case "${1:-build}" in
         echo "  rebuild-driver  - Rebuild only the ST7703 display driver"
         echo "  rebuild-demoapp - Rebuild only the nfc-lvgl-app demo"
         echo "  savedefconfig   - Save current config to defconfig file"
-        echo "  flash <device>  - Flash image to SD card or eMMC device"
+        echo "  flash [-y] <device>  - Flash image to SD card or eMMC device (-y = no prompts)"
         echo "  rpiboot         - Start rpiboot for CM4 eMMC programming"
         ;;
 esac

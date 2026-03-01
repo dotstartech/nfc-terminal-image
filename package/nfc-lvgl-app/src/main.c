@@ -24,6 +24,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <net/if.h>
+#include <arpa/inet.h>
 
 #include "lvgl/lvgl.h"
 #include "linux_nfc_api.h"
@@ -55,6 +56,7 @@ typedef enum {
 
 typedef struct {
     lv_color_t bg;           /* Background */
+    lv_color_t modal_bg;     /* Modal background (slightly darker) */
     lv_color_t header;       /* Header background */
     lv_color_t btn_default;  /* Button default */
     lv_color_t btn_pressed;  /* Button pressed */
@@ -70,6 +72,7 @@ typedef struct {
 /* High Contrast theme */
 static const theme_colors_t g_theme_high_contrast = {
     .bg           = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e */
+    .modal_bg     = {.red = 0x14, .green = 0x14, .blue = 0x26},  /* Slightly darker */
     .header       = {.red = 0x12, .green = 0x12, .blue = 0x24},  /* 0x121224 */
     .btn_default  = {.red = 0x80, .green = 0x80, .blue = 0x80},  /* 0x808080 */
     .btn_pressed  = {.red = 0xC8, .green = 0xC8, .blue = 0xC8},  /* 0xC8C8C8 */
@@ -85,6 +88,7 @@ static const theme_colors_t g_theme_high_contrast = {
 /* Catppuccin Mocha (Dark) */
 static const theme_colors_t g_theme_dark_mocha = {
     .bg           = {.red = 0x1e, .green = 0x1e, .blue = 0x2e},  /* Base: 0x1e1e2e */
+    .modal_bg     = {.red = 0x18, .green = 0x18, .blue = 0x26},  /* Slightly darker */
     .header       = {.red = 0x18, .green = 0x18, .blue = 0x25},  /* Mantle: 0x181825 */
     .btn_default  = {.red = 0x31, .green = 0x32, .blue = 0x44},  /* Surface0: 0x313244 */
     .btn_pressed  = {.red = 0x45, .green = 0x47, .blue = 0x5a},  /* Surface1: 0x45475a */
@@ -100,6 +104,7 @@ static const theme_colors_t g_theme_dark_mocha = {
 /* Catppuccin Latte (Light) */
 static const theme_colors_t g_theme_light_latte = {
     .bg           = {.red = 0xef, .green = 0xf1, .blue = 0xf5},  /* Base: 0xeff1f5 */
+    .modal_bg     = {.red = 0xe0, .green = 0xe3, .blue = 0xea},  /* Slightly darker */
     .header       = {.red = 0xe6, .green = 0xe9, .blue = 0xef},  /* Mantle: 0xe6e9ef */
     .btn_default  = {.red = 0xac, .green = 0xb0, .blue = 0xbe},  /* Surface2: darker */
     .btn_pressed  = {.red = 0x9c, .green = 0xa0, .blue = 0xb0},  /* Overlay0: darker */
@@ -118,6 +123,7 @@ static bool g_theme_locked = false;  /* Theme locked after leaving landing page 
 
 /* Convenience macros to access current theme colors */
 #define THEME_BG           (g_theme->bg)
+#define THEME_MODAL_BG     (g_theme->modal_bg)
 #define THEME_HEADER       (g_theme->header)
 #define THEME_BTN_DEFAULT  (g_theme->btn_default)
 #define THEME_BTN_PRESSED  (g_theme->btn_pressed)
@@ -181,9 +187,17 @@ static lv_obj_t *g_landing_title = NULL;
 static lv_obj_t *g_btn_simple_checkin = NULL;
 static lv_obj_t *g_btn_roles_booking = NULL;
 static lv_obj_t *g_btn_ev_charging = NULL;
+static lv_obj_t *g_btn_settings = NULL;  /* Settings/hamburger button */
 static lv_obj_t *g_btn_theme_contrast = NULL;
 static lv_obj_t *g_btn_theme_dark = NULL;
 static lv_obj_t *g_btn_theme_light = NULL;
+
+/* Settings modal */
+static lv_obj_t *g_settings_modal = NULL;
+static lv_obj_t *g_settings_title = NULL;
+static lv_obj_t *g_settings_lbl_mac = NULL;
+static lv_obj_t *g_settings_lbl_ip = NULL;
+static lv_obj_t *g_settings_lbl_mqtt = NULL;
 
 /* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
@@ -715,6 +729,27 @@ static void apply_theme(void) {
         lv_obj_t *lbl = lv_obj_get_child(g_btn_ev_charging, 0);
         if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
     }
+    if (g_btn_settings) {
+        lv_obj_set_style_bg_color(g_btn_settings, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    
+    /* Settings modal */
+    if (g_settings_modal) {
+        lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_modal, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    if (g_settings_title) {
+        lv_obj_set_style_text_color(g_settings_title, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_lbl_mac) {
+        lv_obj_set_style_text_color(g_settings_lbl_mac, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_lbl_ip) {
+        lv_obj_set_style_text_color(g_settings_lbl_ip, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_lbl_mqtt) {
+        lv_obj_set_style_text_color(g_settings_lbl_mqtt, THEME_TEXT, LV_PART_MAIN);
+    }
     
     /* Update theme toggle button styles (not the selected one) */
     if (g_btn_theme_contrast) {
@@ -930,6 +965,82 @@ static void back_btn_cb(lv_event_t *e) {
     show_page(PAGE_LANDING);
 }
 
+/* Get IP address of network interface */
+static void get_ip_address(char *buf, size_t buflen) {
+    struct ifreq ifr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        snprintf(buf, buflen, "N/A");
+        return;
+    }
+    
+    /* Try common interface names */
+    const char *interfaces[] = {"eth0", "end0", "enp0s3", "wlan0", NULL};
+    for (int i = 0; interfaces[i] != NULL; i++) {
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, interfaces[i], IFNAMSIZ - 1);
+        
+        if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)&ifr.ifr_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, buf, buflen);
+            close(fd);
+            return;
+        }
+    }
+    
+    snprintf(buf, buflen, "N/A");
+    close(fd);
+}
+
+/* Update settings modal info labels */
+static void update_settings_info(void) {
+    if (!g_settings_modal) return;
+    
+    char buf[128];
+    char ip[32];
+    
+    get_ip_address(ip, sizeof(ip));
+    
+    if (g_settings_lbl_mac) {
+        snprintf(buf, sizeof(buf), "MAC: %s", g_device_mac[0] ? g_device_mac : "N/A");
+        lv_label_set_text(g_settings_lbl_mac, buf);
+    }
+    if (g_settings_lbl_ip) {
+        snprintf(buf, sizeof(buf), "IP: %s", ip);
+        lv_label_set_text(g_settings_lbl_ip, buf);
+    }
+    if (g_settings_lbl_mqtt) {
+        snprintf(buf, sizeof(buf), "MQTT: %s", MQTT_ADDRESS);
+        lv_label_set_text(g_settings_lbl_mqtt, buf);
+    }
+}
+
+/* Settings button callback - open settings modal */
+static void settings_btn_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Settings button pressed\n");
+    if (g_settings_modal) {
+        update_settings_info();
+        lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_settings_modal);  /* Ensure modal is on top */
+        lv_refr_now(g_display);
+    }
+}
+
+/* Settings close button callback */
+static void settings_close_btn_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Settings modal closed\n");
+    if (g_settings_modal) {
+        lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
+        /* Reset input device to clear any stale press state */
+        if (g_touch_indev) {
+            lv_indev_reset(g_touch_indev, NULL);
+        }
+        lv_refr_now(g_display);
+    }
+}
+
 static void create_ui(void) {
     LOG("UI: Starting UI creation...\n");
 
@@ -952,65 +1063,27 @@ static void create_ui(void) {
     lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 30);
 
-    /* Theme selector buttons at bottom of landing page */
-    const int theme_btn_size = 84;
-    const int theme_btn_gap = 20;
-    const int theme_btn_y = -92;
+    /* Settings button (hamburger menu) in top right corner */
+    g_btn_settings = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_settings, 84, 84);
+    lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -20, 20);
+    lv_obj_set_style_bg_color(g_btn_settings, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_settings, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_settings, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_settings, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
     
-    /* Button 1: High Contrast */
-    g_btn_theme_contrast = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_BOTTOM_MID, -(theme_btn_size + theme_btn_gap), theme_btn_y);
-    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
-    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-    
-    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
-    lv_label_set_text(lbl_contrast, LV_SYMBOL_IMAGE);  /* Contrast-like icon */
-    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_contrast, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_center(lbl_contrast);
-    
-    /* Button 2: Dark (Mocha) */
-    g_btn_theme_dark = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_dark, LV_ALIGN_BOTTOM_MID, 0, theme_btn_y);
-    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-    
-    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
-    lv_label_set_text(lbl_dark, LV_SYMBOL_EYE_CLOSE);  /* Moon-like (closed eye) */
-    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_dark, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_center(lbl_dark);
-    
-    /* Button 3: Light (Latte) */
-    g_btn_theme_light = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_light, LV_ALIGN_BOTTOM_MID, theme_btn_size + theme_btn_gap, theme_btn_y);
-    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-    
-    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
-    lv_label_set_text(lbl_light, LV_SYMBOL_EYE_OPEN);  /* Sun-like (open eye) */
-    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_light, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_center(lbl_light);
-    
-    LOG("UI: Theme toggle buttons created\n");
+    lv_obj_t *lbl_settings = lv_label_create(g_btn_settings);
+    lv_label_set_text(lbl_settings, LV_SYMBOL_LIST);  /* Hamburger menu icon */
+    lv_obj_set_style_text_color(lbl_settings, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_settings, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_center(lbl_settings);
 
     /* Landing page buttons - vertically centered */
     const int landing_btn_width = 400;
@@ -1160,6 +1233,138 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_touch_debug_label, lv_color_hex(0x808080), LV_PART_MAIN);
     lv_obj_set_style_text_font(g_touch_debug_label, &lv_font_montserrat_18, LV_PART_MAIN);
     lv_obj_align(g_touch_debug_label, LV_ALIGN_BOTTOM_MID, 0, -11);
+
+    /*========================================
+       SETTINGS MODAL
+     *========================================*/
+    g_settings_modal = lv_obj_create(scr);
+    lv_obj_set_size(g_settings_modal, 640, 560);
+    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 40);  /* 40px down from center */
+    lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_modal, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_modal, 16, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_modal, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_modal, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_settings_modal, 20, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(g_settings_modal, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);  /* Start hidden */
+
+    /* Settings title */
+    g_settings_title = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_title, "Settings");
+    lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 10);
+
+    /* Close button (X) */
+    lv_obj_t *btn_close = lv_button_create(g_settings_modal);
+    lv_obj_set_size(btn_close, 64, 64);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(btn_close, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_width(btn_close, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(btn_close, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn_close, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_close = lv_label_create(btn_close);
+    lv_label_set_text(lbl_close, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(lbl_close, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_close, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_obj_center(lbl_close);
+
+    /* Device info labels */
+    const int info_start_y = 76;
+    const int info_line_height = 35;
+
+    g_settings_lbl_mac = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_lbl_mac, "MAC: --");
+    lv_obj_set_style_text_color(g_settings_lbl_mac, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_lbl_mac, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_align(g_settings_lbl_mac, LV_ALIGN_TOP_LEFT, 20, info_start_y);
+
+    g_settings_lbl_ip = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_lbl_ip, "IP: --");
+    lv_obj_set_style_text_color(g_settings_lbl_ip, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_lbl_ip, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_align(g_settings_lbl_ip, LV_ALIGN_TOP_LEFT, 20, info_start_y + info_line_height);
+
+    g_settings_lbl_mqtt = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_lbl_mqtt, "MQTT: --");
+    lv_obj_set_style_text_color(g_settings_lbl_mqtt, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_lbl_mqtt, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_align(g_settings_lbl_mqtt, LV_ALIGN_TOP_LEFT, 20, info_start_y + 2 * info_line_height);
+
+    /* Theme selector buttons */
+    const int theme_btn_size = 84;
+    const int theme_btn_gap = 20;
+    const int theme_btn_y = -30;
+
+    /* Button 1: High Contrast */
+    g_btn_theme_contrast = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_BOTTOM_MID, -(theme_btn_size + theme_btn_gap), theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
+    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
+    lv_label_set_text(lbl_contrast, LV_SYMBOL_IMAGE);  /* Contrast-like icon */
+    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_contrast, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_center(lbl_contrast);
+
+    /* Button 2: Dark (Mocha) */
+    g_btn_theme_dark = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_dark, LV_ALIGN_BOTTOM_MID, 0, theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
+    lv_label_set_text(lbl_dark, LV_SYMBOL_EYE_CLOSE);  /* Moon-like (closed eye) */
+    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dark, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_center(lbl_dark);
+
+    /* Button 3: Light (Latte) */
+    g_btn_theme_light = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_light, LV_ALIGN_BOTTOM_MID, theme_btn_size + theme_btn_gap, theme_btn_y);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
+    lv_label_set_text(lbl_light, LV_SYMBOL_EYE_OPEN);  /* Sun-like (open eye) */
+    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_light, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_center(lbl_light);
+
+    LOG("UI: Settings modal created\n");
 
     /* Start on landing page */
     LOG("UI: Calling show_page(PAGE_LANDING)...\n");
