@@ -212,9 +212,40 @@ static lv_obj_t *g_btn_theme_light = NULL;
 static lv_obj_t *g_settings_modal = NULL;
 static lv_obj_t *g_settings_close_btn = NULL;
 static lv_obj_t *g_settings_title = NULL;
-static lv_obj_t *g_settings_lbl_mac = NULL;
-static lv_obj_t *g_settings_lbl_ip = NULL;
-static lv_obj_t *g_settings_lbl_mqtt = NULL;
+static lv_obj_t *g_settings_val_mac = NULL;
+static lv_obj_t *g_settings_val_ip = NULL;
+static lv_obj_t *g_settings_ta_mqtt = NULL;  /* Textarea for MQTT address */
+static lv_obj_t *g_settings_keyboard = NULL; /* Virtual keyboard */
+
+/* Custom keyboard maps for MQTT input (lowercase) */
+static const char * const mqtt_kb_map_lc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "ABC", "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+    "z", "x", "c", "v", "b", "n", "m", ".", ":", "/", "-", ""
+};
+
+static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_lc_map[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4
+};
+
+/* Custom keyboard maps for MQTT input (uppercase) */
+static const char * const mqtt_kb_map_uc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "abc", "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+    "Z", "X", "C", "V", "B", "N", "M", ".", ":", "/", "-", ""
+};
+
+static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_uc_map[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4
+};
 
 /* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
@@ -755,6 +786,7 @@ static void role_btn_event_cb(lv_event_t *e) {
 /*====================
    NFC TAG HANDLING
  *====================*/
+#ifndef DESKTOP_BUILD
 /* Convert NFC protocol value to human-readable string */
 static const char* protocol_to_string(uint8_t protocol) {
     switch (protocol) {
@@ -768,7 +800,6 @@ static const char* protocol_to_string(uint8_t protocol) {
     }
 }
 
-#ifndef DESKTOP_BUILD
 static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
     size_t pos = 0;
     for (unsigned int i = 0; i < tag->uid_length && pos < buflen - 3; i++) {
@@ -944,14 +975,21 @@ static void apply_theme(void) {
     if (g_settings_title) {
         lv_obj_set_style_text_color(g_settings_title, THEME_TEXT, LV_PART_MAIN);
     }
-    if (g_settings_lbl_mac) {
-        lv_obj_set_style_text_color(g_settings_lbl_mac, THEME_TEXT, LV_PART_MAIN);
+    if (g_settings_val_mac) {
+        lv_obj_set_style_text_color(g_settings_val_mac, THEME_TEXT, LV_PART_MAIN);
     }
-    if (g_settings_lbl_ip) {
-        lv_obj_set_style_text_color(g_settings_lbl_ip, THEME_TEXT, LV_PART_MAIN);
+    if (g_settings_val_ip) {
+        lv_obj_set_style_text_color(g_settings_val_ip, THEME_TEXT, LV_PART_MAIN);
     }
-    if (g_settings_lbl_mqtt) {
-        lv_obj_set_style_text_color(g_settings_lbl_mqtt, THEME_TEXT, LV_PART_MAIN);
+    if (g_settings_ta_mqtt) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_settings_keyboard) {
+        lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
+        lv_obj_set_style_text_color(g_settings_keyboard, THEME_TEXT, LV_PART_ITEMS);
     }
     
     /* Update theme toggle button styles (not the selected one) */
@@ -1210,22 +1248,18 @@ static void get_ip_address(char *buf, size_t buflen) {
 static void update_settings_info(void) {
     if (!g_settings_modal) return;
     
-    char buf[128];
     char ip[32];
     
     get_ip_address(ip, sizeof(ip));
     
-    if (g_settings_lbl_mac) {
-        snprintf(buf, sizeof(buf), "MAC: %s", g_device_mac[0] ? g_device_mac : "N/A");
-        lv_label_set_text(g_settings_lbl_mac, buf);
+    if (g_settings_val_mac) {
+        lv_label_set_text(g_settings_val_mac, g_device_mac[0] ? g_device_mac : "N/A");
     }
-    if (g_settings_lbl_ip) {
-        snprintf(buf, sizeof(buf), "IP: %s", ip);
-        lv_label_set_text(g_settings_lbl_ip, buf);
+    if (g_settings_val_ip) {
+        lv_label_set_text(g_settings_val_ip, ip);
     }
-    if (g_settings_lbl_mqtt) {
-        snprintf(buf, sizeof(buf), "MQTT: %s", MQTT_ADDRESS);
-        lv_label_set_text(g_settings_lbl_mqtt, buf);
+    if (g_settings_ta_mqtt) {
+        lv_textarea_set_text(g_settings_ta_mqtt, MQTT_ADDRESS);
     }
 }
 
@@ -1245,6 +1279,9 @@ static void settings_btn_cb(lv_event_t *e) {
 static void settings_close_btn_cb(lv_event_t *e) {
     (void)e;
     LOG("UI: Settings modal closed\n");
+    if (g_settings_keyboard) {
+        lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
     if (g_settings_modal) {
         lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
         /* Reset input device to clear any stale press state */
@@ -1253,6 +1290,44 @@ static void settings_close_btn_cb(lv_event_t *e) {
         }
         lv_refr_now(g_display);
     }
+}
+
+/* Keyboard value changed callback - refresh textarea display after each keypress */
+static void mqtt_kb_value_changed_cb(lv_event_t *e) {
+    (void)e;
+    if (g_settings_ta_mqtt) {
+        lv_obj_invalidate(g_settings_ta_mqtt);
+        lv_refr_now(g_display);
+    }
+}
+
+/* MQTT textarea click callback - show keyboard */
+static void mqtt_ta_click_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: MQTT textarea clicked\n");
+    if (g_settings_keyboard) {
+        lv_keyboard_set_textarea(g_settings_keyboard, g_settings_ta_mqtt);
+        lv_obj_remove_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_settings_keyboard);
+        lv_obj_invalidate(g_settings_keyboard);
+        lv_refr_now(g_display);
+    }
+}
+
+/* Settings modal click callback - hide keyboard when clicking outside textarea */
+static void settings_modal_click_cb(lv_event_t *e) {
+    lv_obj_t *target = lv_event_get_target(e);
+    if (!g_settings_keyboard || lv_obj_has_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN))
+        return;
+    /* Walk up from target to check if click was on textarea or keyboard (or their children) */
+    lv_obj_t *obj = target;
+    while (obj != NULL) {
+        if (obj == g_settings_ta_mqtt || obj == g_settings_keyboard) return;
+        obj = lv_obj_get_parent(obj);
+    }
+    lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(g_display);
 }
 
 static void create_ui(void) {
@@ -1326,7 +1401,7 @@ static void create_ui(void) {
     
     lv_obj_t *lbl1 = lv_label_create(g_btn_simple_checkin);
     lv_label_set_text(lbl1, "Check-in/Check-out");
-    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl1, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl1);
 
@@ -1344,7 +1419,7 @@ static void create_ui(void) {
     
     lv_obj_t *lbl2 = lv_label_create(g_btn_roles_booking);
     lv_label_set_text(lbl2, "Roles Booking");
-    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl2, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl2);
 
@@ -1362,17 +1437,17 @@ static void create_ui(void) {
     
     lv_obj_t *lbl3 = lv_label_create(g_btn_ev_charging);
     lv_label_set_text(lbl3, "EV Charging");
-    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl3, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl3);
 
     /*========================================
        ROLES BOOKING APP
      *========================================*/
-    /* Header: 720x120 at top */
+    /* Header: 720x116 at top */
     g_header = lv_obj_create(scr);
     lv_obj_remove_style_all(g_header);
-    lv_obj_set_size(g_header, 720, 120);
+    lv_obj_set_size(g_header, 720, 116);
     lv_obj_set_pos(g_header, 0, 0);
     lv_obj_set_style_bg_color(g_header, COLOR_HEADER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_header, LV_OPA_COVER, LV_PART_MAIN);
@@ -1410,8 +1485,8 @@ static void create_ui(void) {
     /* Roles container - holds all role buttons */
     g_roles_container = lv_obj_create(scr);
     lv_obj_remove_style_all(g_roles_container);
-    lv_obj_set_size(g_roles_container, 720, 600);
-    lv_obj_set_pos(g_roles_container, 0, 120);
+    lv_obj_set_size(g_roles_container, 720, 604);
+    lv_obj_set_pos(g_roles_container, 0, 116);
     lv_obj_set_style_bg_color(g_roles_container, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_roles_container, LV_OPA_COVER, LV_PART_MAIN);
 
@@ -1451,8 +1526,8 @@ static void create_ui(void) {
        SETTINGS MODAL
      *========================================*/
     g_settings_modal = lv_obj_create(scr);
-    lv_obj_set_size(g_settings_modal, 700, 600);
-    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 48);  /* 48px down from center */
+    lv_obj_set_size(g_settings_modal, 700, 608);
+    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 44);  /* top edge 8px higher, bottom unchanged */
     lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_settings_modal, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_modal, 16, LV_PART_MAIN);
@@ -1467,7 +1542,7 @@ static void create_ui(void) {
     g_settings_title = lv_label_create(g_settings_modal);
     lv_label_set_text(g_settings_title, "Settings");
     lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 10);
 
     /* Close button (X) */
@@ -1484,6 +1559,7 @@ static void create_ui(void) {
     lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_modal, settings_modal_click_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_close = lv_label_create(btn_close);
     lv_label_set_text(lbl_close, FA_ICON_XMARK);
@@ -1491,37 +1567,54 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_close, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_close);
 
-    /* Device info labels */
+    /* Device info labels - keys in darker grey, values in lighter grey */
     const int info_start_y = 76;
-    const int info_line_height = 40;
+    const int row_gap = 52;  /* gap between rows */
 
-    g_settings_lbl_mac = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_lbl_mac, "MAC: --");
-    lv_obj_set_style_text_color(g_settings_lbl_mac, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_lbl_mac, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_align(g_settings_lbl_mac, LV_ALIGN_TOP_LEFT, 20, info_start_y);
+    /* MAC key label */
+    lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mac_key, "MAC:");
+    lv_obj_set_style_text_color(lbl_mac_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mac_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mac_key, LV_ALIGN_TOP_LEFT, 20, info_start_y);
 
-    g_settings_lbl_ip = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_lbl_ip, "IP: --");
-    lv_obj_set_style_text_color(g_settings_lbl_ip, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_lbl_ip, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_align(g_settings_lbl_ip, LV_ALIGN_TOP_LEFT, 20, info_start_y + info_line_height);
+    /* MAC value label */
+    g_settings_val_mac = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_mac, "--");
+    lv_obj_set_style_text_color(g_settings_val_mac, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_mac, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_mac, lbl_mac_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    g_settings_lbl_mqtt = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_lbl_mqtt, "MQTT: --");
-    lv_obj_set_style_text_color(g_settings_lbl_mqtt, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_lbl_mqtt, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_align(g_settings_lbl_mqtt, LV_ALIGN_TOP_LEFT, 20, info_start_y + 2 * info_line_height);
+    /* IP key label */
+    lv_obj_t *lbl_ip_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_ip_key, "IP:");
+    lv_obj_set_style_text_color(lbl_ip_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_ip_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 400, info_start_y);
 
-    /* Theme selector buttons */
-    const int theme_btn_size = 84;
-    const int theme_btn_gap = 20;
-    const int theme_btn_y = -30;
+    /* IP value label */
+    g_settings_val_ip = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_ip, "--");
+    lv_obj_set_style_text_color(g_settings_val_ip, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    /* Button 1: High Contrast */
+    /* Color Theme row - between MAC/IP and MQTT */
+    const int theme_row_y = info_start_y + row_gap;
+    const int theme_btn_size = 76;
+    const int theme_btn_gap = 16;
+
+    /* "Theme:" label */
+    lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_theme_key, "Theme:");
+    lv_obj_set_style_text_color(lbl_theme_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_theme_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_theme_key, LV_ALIGN_TOP_LEFT, 20, theme_row_y + (theme_btn_size - 28) / 2);
+
+    /* Button 1: High Contrast - centered group */
     g_btn_theme_contrast = lv_button_create(g_settings_modal);
     lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_BOTTOM_MID, -(theme_btn_size + theme_btn_gap), theme_btn_y);
+    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_TOP_MID, -(theme_btn_size + theme_btn_gap), theme_row_y);
     lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
     lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
@@ -1541,7 +1634,7 @@ static void create_ui(void) {
     /* Button 2: Dark (Mocha) */
     g_btn_theme_dark = lv_button_create(g_settings_modal);
     lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_dark, LV_ALIGN_BOTTOM_MID, 0, theme_btn_y);
+    lv_obj_align(g_btn_theme_dark, LV_ALIGN_TOP_MID, 0, theme_row_y);
     lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
@@ -1561,7 +1654,7 @@ static void create_ui(void) {
     /* Button 3: Light (Latte) */
     g_btn_theme_light = lv_button_create(g_settings_modal);
     lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_light, LV_ALIGN_BOTTOM_MID, theme_btn_size + theme_btn_gap, theme_btn_y);
+    lv_obj_align(g_btn_theme_light, LV_ALIGN_TOP_MID, theme_btn_size + theme_btn_gap, theme_row_y);
     lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
@@ -1578,7 +1671,62 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
     lv_obj_center(lbl_light);
 
+    /* MQTT key label - below Color Theme row */
+    const int mqtt_row_y = theme_row_y + theme_btn_size + row_gap - 16;
+    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mqtt_key, "MQTT:");
+    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
+
+    /* MQTT value - editable textarea */
+    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
+    lv_obj_set_size(g_settings_ta_mqtt, 530, 44);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+
     LOG("UI: Settings modal created\n");
+
+    /*========================================
+       VIRTUAL KEYBOARD (screen-level, must be last to stay on top)
+     *========================================*/
+    g_settings_keyboard = lv_keyboard_create(scr);
+    lv_obj_set_size(g_settings_keyboard, 700, 300);
+    /* Align keyboard bottom with settings modal bottom (modal bottom = 708px from screen top) */
+    lv_obj_align(g_settings_keyboard, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_keyboard_set_map(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER,
+                        mqtt_kb_map_lc, mqtt_kb_ctrl_lc_map);
+    lv_keyboard_set_map(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_UPPER,
+                        mqtt_kb_map_uc, mqtt_kb_ctrl_uc_map);
+    lv_keyboard_set_mode(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(g_settings_keyboard, g_settings_ta_mqtt);
+    /* Keyboard background */
+    lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_keyboard, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_keyboard, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_keyboard, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_keyboard, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_keyboard, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(g_settings_keyboard, 4, LV_PART_MAIN);
+    /* Keyboard button styling */
+    lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(g_settings_keyboard, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_settings_keyboard, THEME_TEXT, LV_PART_ITEMS);
+    lv_obj_set_style_text_font(g_settings_keyboard, &lv_font_montserrat_18, LV_PART_ITEMS);
+    lv_obj_set_style_radius(g_settings_keyboard, 6, LV_PART_ITEMS);
+    lv_obj_add_event_cb(g_settings_keyboard, mqtt_kb_value_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
 
     /* Start on landing page */
     LOG("UI: Calling show_page(PAGE_LANDING)...\n");
