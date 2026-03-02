@@ -1385,7 +1385,7 @@ static void create_ui(void) {
     const int landing_btn_height = 80;
     const int landing_btn_gap = 20;
     const int landing_total_height = 3 * landing_btn_height + 2 * landing_btn_gap;
-    const int landing_start_y = (720 - landing_total_height) / 2 - 4;
+    const int landing_start_y = (720 - landing_total_height) / 2;
 
     /* Button 1: Check-in/Check-out */
     g_btn_simple_checkin = lv_button_create(g_landing_container);
@@ -1543,7 +1543,7 @@ static void create_ui(void) {
     lv_label_set_text(g_settings_title, "Settings");
     lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 8);
 
     /* Close button (X) */
     g_settings_close_btn = lv_button_create(g_settings_modal);
