@@ -1165,6 +1165,31 @@ static void theme_btn_cb(lv_event_t *e) {
     lv_refr_now(NULL);
 }
 
+/* Animation helper: set object opacity (for use as lv_anim_exec_xcb_t) */
+static void anim_opa_cb(void *obj, int32_t value) {
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)value, LV_PART_MAIN);
+}
+
+/* Animation helper: set object scale (for use as lv_anim_exec_xcb_t) */
+static void anim_scale_cb(void *obj, int32_t value) {
+    lv_obj_set_style_transform_scale((lv_obj_t *)obj, value, LV_PART_MAIN);
+}
+
+/* Fade in an LVGL object: unhide, set transparent, animate to opaque */
+static void fade_in_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
+    lv_obj_set_style_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_delay(&a, delay);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
 /* Show/hide pages based on current page */
 static void show_page(app_page_t page) {
     LOG("UI: Switching to page %d\n", page);
@@ -1182,26 +1207,26 @@ static void show_page(app_page_t page) {
     if (g_roles_container) lv_obj_add_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
     if (g_header) lv_obj_add_flag(g_header, LV_OBJ_FLAG_HIDDEN);
     
-    /* Show the selected page */
+    /* Show the selected page with fade-in transition */
     switch (page) {
         case PAGE_LANDING:
             LOG("UI: Showing landing page\n");
-            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
             break;
         case PAGE_ROLES_BOOKING:
             LOG("UI: Showing roles booking page\n");
-            if (g_header) lv_obj_remove_flag(g_header, LV_OBJ_FLAG_HIDDEN);
-            if (g_roles_container) lv_obj_remove_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
+            if (g_header) fade_in_obj(g_header, 250, 0);
+            if (g_roles_container) fade_in_obj(g_roles_container, 250, 50);
             break;
         case PAGE_SIMPLE_CHECKIN:
             LOG("UI: Showing simple check-in page (not implemented)\n");
             /* Not implemented yet - stay on landing */
-            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
             break;
         case PAGE_EV_CHARGING:
             LOG("UI: Showing EV charging page (not implemented)\n");
             /* Not implemented yet - stay on landing */
-            if (g_landing_container) lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
             break;
     }
     
@@ -1209,20 +1234,36 @@ static void show_page(app_page_t page) {
     lv_refr_now(g_display);
 }
 
-/* Generic button press effect callback */
+/* Generic button press effect callback - color change + scale animation */
 static void btn_press_effect_cb(lv_event_t *e) {
     lv_obj_t *btn = lv_event_get_target(e);
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
         lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
+        /* Scale down animation: 100% -> 94% */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, btn);
+        lv_anim_set_values(&a, 256, 240);
+        lv_anim_set_exec_cb(&a, anim_scale_cb);
+        lv_anim_set_duration(&a, 80);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        /*LOG("UI: Button PRESSED - color changed to PRESSED\n");*/
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
+        /* Scale back animation: 94% -> 100% */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, btn);
+        lv_anim_set_values(&a, 240, 256);
+        lv_anim_set_exec_cb(&a, anim_scale_cb);
+        lv_anim_set_duration(&a, 100);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
         lv_obj_invalidate(btn);
         lv_refr_now(g_display);
-        /*LOG("UI: Button RELEASED - color changed to GREY\n");*/
     }
 }
 
@@ -1601,7 +1642,7 @@ static void create_ui(void) {
     g_status_label = lv_label_create(g_header);
     lv_label_set_text(g_status_label, "Initializing NFC...");
     lv_obj_set_style_text_color(g_status_label, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_obj_set_width(g_status_label, 600);
     lv_obj_align(g_status_label, LV_ALIGN_LEFT_MID, 0, 0);
@@ -2318,6 +2359,7 @@ int main(int argc, char *argv[]) {
     }
 
     lv_init();
+    lv_tick_set_cb(custom_tick_get);
 
     /* Create display */
     g_display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -2353,6 +2395,7 @@ int main(int argc, char *argv[]) {
     }
 
     lv_init();
+    lv_tick_set_cb(custom_tick_get);
 
     /* Create display */
     g_display = lv_display_create(g_vinfo.xres, g_vinfo.yres);
