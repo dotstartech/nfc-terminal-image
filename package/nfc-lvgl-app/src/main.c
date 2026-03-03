@@ -1499,7 +1499,7 @@ static void create_ui(void) {
 
     /* Settings button (hamburger menu) in top right corner */
     g_btn_settings = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_settings, 92, 92);
+    lv_obj_set_size(g_btn_settings, 96, 96);
     lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -10, 10);
     lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
@@ -1696,7 +1696,7 @@ static void create_ui(void) {
     /* Close button (X) */
     g_settings_close_btn = lv_button_create(g_settings_modal);
     lv_obj_t *btn_close = g_settings_close_btn;
-    lv_obj_set_size(btn_close, 88, 88);
+    lv_obj_set_size(btn_close, 96, 96);
     lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 0, -4);
     lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
@@ -1899,7 +1899,7 @@ static void create_ui(void) {
     lv_label_set_text(lbl_ip_key, "IP");
     lv_obj_set_style_text_color(lbl_ip_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(lbl_ip_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 416, info_row_y);
+    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 452, info_row_y);
 
     /* IP value label */
     g_settings_val_ip = lv_label_create(g_settings_modal);
