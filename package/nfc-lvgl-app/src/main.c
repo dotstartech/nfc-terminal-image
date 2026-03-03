@@ -8,6 +8,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 #ifdef DESKTOP_BUILD
 #include <SDL2/SDL.h>
@@ -259,9 +260,9 @@ static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in 
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
-static volatile int g_running = 1;
-static volatile int g_nfc_ready = 0;
-static volatile int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
+static atomic_int g_running = 1;
+static atomic_int g_nfc_ready = 0;
+static atomic_int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
 
 #ifdef DESKTOP_BUILD
 /* SDL display */
@@ -749,11 +750,12 @@ static void update_status_label(void) {
     char status[256] = "";
     const char *tag_str = (g_last_tag_id[0] != '\0') ? g_last_tag_id : "";
 
-    LOG("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", g_nfc_ready, tag_str);
+    int nfc_ready = atomic_load(&g_nfc_ready);
+    LOG("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", nfc_ready, tag_str);
 
     /* Build status string */
     if (tag_str[0] == '\0') {
-        if (g_nfc_ready) {
+        if (nfc_ready) {
             snprintf(status, sizeof(status), "Waiting for NFC card...");
         } else {
             snprintf(status, sizeof(status), "Initializing NFC...");
@@ -839,6 +841,9 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
         return;
     }
 
+    /* Lock UI mutex to protect shared role state and g_last_tag_id */
+    pthread_mutex_lock(&g_ui_mutex);
+
     /* Process all roles */
     for (int i = 0; i < NUM_ROLES; i++) {
         role_t *role = &g_roles[i];
@@ -858,11 +863,13 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
     /* Update last seen tag */
     strncpy(g_last_tag_id, tag_id, sizeof(g_last_tag_id) - 1);
 
+    pthread_mutex_unlock(&g_ui_mutex);
+
     /* Queue tag event for MQTT publish from main thread */
     mqtt_queue_tag(tag_id, protocol);
 
     /* Signal main loop to refresh UI */
-    g_ui_needs_refresh = 1;
+    atomic_store(&g_ui_needs_refresh, 1);
 }
 
 /*====================
@@ -917,11 +924,11 @@ static void *nfc_thread(void *arg) {
     LOG("NFC: Enabled NFC discovery\n");
 
     /* Mark NFC as ready - main loop will refresh UI */
-    g_nfc_ready = 1;
-    g_ui_needs_refresh = 1;
+    atomic_store(&g_nfc_ready, 1);
+    atomic_store(&g_ui_needs_refresh, 1);
 
     /* Keep thread alive while polling */
-    while (g_running) {
+    while (atomic_load(&g_running)) {
         sleep(1);
     }
 
@@ -1976,8 +1983,12 @@ static void mqtt_on_connected(void *context, char *cause) {
         return;
     }
     
-    static char payload[32];
-    snprintf(payload, sizeof(payload), "{\"state\":\"ON\"}");
+    char *payload = malloc(32);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for state ON\n");
+        return;
+    }
+    snprintf(payload, 32, "{\"state\":\"ON\"}");
     
     MQTTAsync_message msg = MQTTAsync_message_initializer;
     msg.payload = payload;
@@ -1987,12 +1998,15 @@ static void mqtt_on_connected(void *context, char *cause) {
     
     LOG("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
     
-    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
-    if (rc == MQTTASYNC_SUCCESS) {
-        LOG("MQTT: State ON queued for publish\n");
-    } else {
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &resp);
+    if (rc != MQTTASYNC_SUCCESS) {
         LOG("MQTT: Failed to queue state ON, rc=%d\n", rc);
+    } else {
+        LOG("MQTT: State ON queued for publish\n");
     }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
 }
 
 /* Callback: Connection failed (MQTT v5.0) */
@@ -2015,8 +2029,12 @@ static void mqtt_publish_state(const char *state) {
         return;
     }
     
-    static char payload[32];  /* Static to ensure it persists during async send */
-    snprintf(payload, sizeof(payload), "{\"state\":\"%s\"}", state);
+    char *payload = malloc(32);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for state %s\n", state);
+        return;
+    }
+    snprintf(payload, 32, "{\"state\":\"%s\"}", state);
     
     MQTTAsync_message msg = MQTTAsync_message_initializer;
     msg.payload = payload;
@@ -2024,12 +2042,15 @@ static void mqtt_publish_state(const char *state) {
     msg.qos = MQTT_QOS;
     msg.retained = 1;  /* Retain state message */
     
-    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, NULL);
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &resp);
     if (rc == MQTTASYNC_SUCCESS) {
         LOG("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
     } else {
         LOG("MQTT: Failed to publish state, rc=%d\n", rc);
     }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
 }
 
 static int mqtt_init(void) {
@@ -2196,8 +2217,12 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     tag_no_colons[j] = '\0';
 
     /* Build JSON payload with tagId and type */
-    static char payload[128];  /* Static to persist during async send */
-    snprintf(payload, sizeof(payload), "{\"tagId\":\"%s\",\"type\":\"%s\"}", tag_no_colons, protocol_to_string(protocol));
+    char *payload = malloc(128);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for tag event\n");
+        return;
+    }
+    snprintf(payload, 128, "{\"tagId\":\"%s\",\"type\":\"%s\"}", tag_no_colons, protocol_to_string(protocol));
 
     /* Async publish - non-blocking */
     MQTTAsync_message msg = MQTTAsync_message_initializer;
@@ -2206,12 +2231,15 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     msg.qos = MQTT_QOS;
     msg.retained = 0;
 
-    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_topic, &msg, NULL);
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_topic, &msg, &resp);
     if (rc == MQTTASYNC_SUCCESS) {
         LOG("MQTT: Publish queued payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
     } else {
         LOG("MQTT: Failed to queue publish, rc=%d\n", rc);
     }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
 }
 
 /* Queue a tag ID for publishing from main thread */
@@ -2265,7 +2293,7 @@ static void mqtt_process_queue(void) {
  *====================*/
 static void signal_handler(int sig) {
     (void)sig;
-    g_running = 0;
+    atomic_store(&g_running, 0);
 }
 
 /*====================
@@ -2385,7 +2413,7 @@ int main(int argc, char *argv[]) {
 #ifndef DESKTOP_BUILD
     int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
 #endif
-    while (g_running) {
+    while (atomic_load(&g_running)) {
 #ifndef DESKTOP_BUILD
         /* Process MQTT queue from main thread */
         mqtt_process_queue();
@@ -2414,8 +2442,8 @@ int main(int argc, char *argv[]) {
         pthread_mutex_lock(&g_ui_mutex);
         
         /* Check if NFC thread requested UI refresh */
-        if (g_ui_needs_refresh) {
-            g_ui_needs_refresh = 0;
+        if (atomic_load(&g_ui_needs_refresh)) {
+            atomic_store(&g_ui_needs_refresh, 0);
             update_status_label();
             for (int i = 0; i < NUM_ROLES; i++) {
                 update_button_color(&g_roles[i]);
