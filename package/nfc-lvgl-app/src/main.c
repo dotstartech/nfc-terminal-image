@@ -792,9 +792,6 @@ static void role_btn_event_cb(lv_event_t *e) {
 
     update_button_color(role);
     update_status_label();
-    
-    /* Force immediate display refresh */
-    lv_refr_now(g_display);
 }
 
 /*====================
@@ -903,16 +900,38 @@ static void *nfc_thread(void *arg) {
     /* Give the UI time to render first frame */
     sleep(2);
 
-    res = nfcManager_doInitialize();
-    if (res != 0) {
-        fprintf(stderr, "NFC init failed: %d\n", res);
-        fflush(stderr);
-        pthread_mutex_lock(&g_ui_mutex);
-        lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
-        pthread_mutex_unlock(&g_ui_mutex);
-        return NULL;
-    } else{
-        LOG("NFC: Initialized NFC\n");
+    /* Retry NFC initialization with exponential backoff */
+    int retry_delay = 2;  /* Start with 2 seconds */
+    const int max_retry_delay = 30;  /* Cap at 30 seconds */
+    const int max_retries = 10;
+
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        res = nfcManager_doInitialize();
+        if (res == 0) {
+            LOG("NFC: Initialized NFC (attempt %d)\n", attempt);
+            break;
+        }
+
+        LOG("NFC: Init failed (attempt %d/%d, rc=%d), retrying in %ds...\n",
+            attempt, max_retries, res, retry_delay);
+
+        if (attempt == max_retries) {
+            fprintf(stderr, "NFC init failed after %d attempts\n", max_retries);
+            fflush(stderr);
+            pthread_mutex_lock(&g_ui_mutex);
+            lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
+            pthread_mutex_unlock(&g_ui_mutex);
+            atomic_store(&g_ui_needs_refresh, 1);
+            return NULL;
+        }
+
+        /* Wait with backoff, but check g_running so we can exit promptly */
+        for (int s = 0; s < retry_delay && atomic_load(&g_running); s++) {
+            sleep(1);
+        }
+        if (!atomic_load(&g_running)) return NULL;
+
+        retry_delay = (retry_delay * 2 > max_retry_delay) ? max_retry_delay : retry_delay * 2;
     }
 
     /*LOG("NFC: Registering callbacks...\n");*/
@@ -1086,7 +1105,6 @@ static void apply_theme(void) {
     }
     
     lv_obj_invalidate(scr);
-    lv_refr_now(g_display);
 }
 
 /* Helper to update theme button styles */
@@ -1162,7 +1180,6 @@ static void theme_btn_cb(lv_event_t *e) {
     
     update_theme_button_styles();
     apply_theme();
-    lv_refr_now(NULL);
 }
 
 /* Animation helper: set object opacity (for use as lv_anim_exec_xcb_t) */
@@ -1240,30 +1257,26 @@ static void btn_press_effect_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
         lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
-        /* Scale down animation: 100% -> 94% */
+        /* Scale down animation: 100% -> 95% */
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, btn);
-        lv_anim_set_values(&a, 256, 240);
+        lv_anim_set_values(&a, 256, 244);
         lv_anim_set_exec_cb(&a, anim_scale_cb);
         lv_anim_set_duration(&a, 80);
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
-        lv_obj_invalidate(btn);
-        lv_refr_now(g_display);
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
-        /* Scale back animation: 94% -> 100% */
+        /* Scale back animation: 95% -> 100% */
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, btn);
-        lv_anim_set_values(&a, 240, 256);
+        lv_anim_set_values(&a, 244, 256);
         lv_anim_set_exec_cb(&a, anim_scale_cb);
         lv_anim_set_duration(&a, 100);
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
-        lv_obj_invalidate(btn);
-        lv_refr_now(g_display);
     }
 }
 
@@ -1375,7 +1388,6 @@ static int check_mqtt_settings_changed(void) {
             lv_obj_set_style_text_color(g_settings_mqtt_status,
                 connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
             lv_obj_invalidate(g_settings_mqtt_status);
-            lv_refr_now(g_display);
         }
 #else
         LOG("Desktop build - MQTT reconnect skipped\n");
@@ -1427,7 +1439,6 @@ static void settings_btn_cb(lv_event_t *e) {
         update_settings_info();
         lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(g_settings_modal);  /* Ensure modal is on top */
-        lv_refr_now(g_display);
     }
 }
 
@@ -1444,7 +1455,6 @@ static void settings_close_btn_cb(lv_event_t *e) {
         if (g_touch_indev) {
             lv_indev_reset(g_touch_indev, NULL);
         }
-        lv_refr_now(g_display);
     }
 
     /* Check if any MQTT settings changed and trigger reconnect */
@@ -1456,7 +1466,6 @@ static void mqtt_kb_value_changed_cb(lv_event_t *e) {
     (void)e;
     if (g_active_textarea) {
         lv_obj_invalidate(g_active_textarea);
-        lv_refr_now(g_display);
     }
 }
 
@@ -1466,9 +1475,13 @@ static void mqtt_kb_ready_cb(lv_event_t *e) {
     LOG("UI: Keyboard Enter pressed\n");
     if (g_settings_keyboard) {
         lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_invalidate(lv_screen_active());
-        lv_refr_now(g_display);
     }
+    /* Remove cursor from textarea by clearing focus */
+    if (g_active_textarea) {
+        lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        g_active_textarea = NULL;
+    }
+    lv_obj_invalidate(lv_screen_active());
     /* Check if any MQTT settings changed and trigger reconnect */
     check_mqtt_settings_changed();
 }
@@ -1483,7 +1496,6 @@ static void mqtt_ta_click_cb(lv_event_t *e) {
         lv_obj_remove_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(g_settings_keyboard);
         lv_obj_invalidate(g_settings_keyboard);
-        lv_refr_now(g_display);
     }
 }
 
@@ -1505,7 +1517,6 @@ static void settings_modal_click_cb(lv_event_t *e) {
         if (!on_input) {
             lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
             lv_obj_invalidate(lv_screen_active());
-            lv_refr_now(g_display);
         } else {
             return;  /* Click was on textarea/keyboard, nothing to do */
         }
@@ -2370,8 +2381,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* Setup draw buffers */
-    static uint8_t buf1[DISPLAY_WIDTH * 40 * 2];  /* 40 lines * 2 bytes/pixel (RGB565) */
-    static uint8_t buf2[DISPLAY_WIDTH * 40 * 2];
+    static uint8_t buf1[DISPLAY_WIDTH * 180 * 2];  /* 180 lines * 2 bytes/pixel (RGB565) = ~253KB */
+    static uint8_t buf2[DISPLAY_WIDTH * 180 * 2];
     lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(g_display, sdl_flush_cb);
 
@@ -2406,9 +2417,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Setup draw buffers - use FULL rendering for cleaner display */
-    static uint8_t buf1[DISPLAY_WIDTH * 40 * 2];  /* 40 lines * 2 bytes/pixel (RGB565) */
-    static uint8_t buf2[DISPLAY_WIDTH * 40 * 2];
+    /* Setup draw buffers - 1/4 screen height for efficient rendering */
+    static uint8_t buf1[DISPLAY_WIDTH * 180 * 2];  /* 180 lines * 2 bytes/pixel (RGB565) = ~253KB */
+    static uint8_t buf2[DISPLAY_WIDTH * 180 * 2];
     lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(g_display, fb_flush_cb);
 
@@ -2492,7 +2503,6 @@ int main(int argc, char *argv[]) {
                 update_button_color(&g_roles[i]);
             }
             lv_obj_invalidate(lv_screen_active());
-            lv_refr_now(g_display);  /* Force immediate refresh */
             LOG("UI: Refreshed from main loop\n");
         }
         
