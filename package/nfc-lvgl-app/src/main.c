@@ -39,6 +39,7 @@ LV_IMAGE_DECLARE(logo_short);
 #define FA_ICON_SUN            "\xEF\x86\x85"  /* U+F185 - sun (light theme) */
 #define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast) */
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
+#define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
 
 #ifdef DESKTOP_BUILD
 #include "linux_nfc_api_stub.h"
@@ -215,21 +216,25 @@ static lv_obj_t *g_settings_title = NULL;
 static lv_obj_t *g_settings_val_mac = NULL;
 static lv_obj_t *g_settings_val_ip = NULL;
 static lv_obj_t *g_settings_ta_mqtt = NULL;  /* Textarea for MQTT address */
+static lv_obj_t *g_settings_ta_mqtt_user = NULL;  /* Textarea for MQTT username */
+static lv_obj_t *g_settings_ta_mqtt_pswd = NULL;  /* Textarea for MQTT password */
+static lv_obj_t *g_settings_mqtt_status = NULL; /* MQTT connection status icon */
 static lv_obj_t *g_settings_keyboard = NULL; /* Virtual keyboard */
+static lv_obj_t *g_active_textarea = NULL; /* Currently focused textarea */
 
 /* Custom keyboard maps for MQTT input (lowercase) */
 static const char * const mqtt_kb_map_lc[] = {
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
     "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
     "ABC", "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
-    "z", "x", "c", "v", "b", "n", "m", ".", ":", "/", "-", ""
+    "z", "x", "c", "v", "b", "n", "m", ".", ":", "/", LV_SYMBOL_NEW_LINE, ""
 };
 
 static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_lc_map[] = {
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6
 };
 
 /* Custom keyboard maps for MQTT input (uppercase) */
@@ -237,19 +242,20 @@ static const char * const mqtt_kb_map_uc[] = {
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
     "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
     "abc", "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
-    "Z", "X", "C", "V", "B", "N", "M", ".", ":", "/", "-", ""
+    "Z", "X", "C", "V", "B", "N", "M", ".", ":", "/", LV_SYMBOL_NEW_LINE, ""
 };
 
 static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_uc_map[] = {
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6
 };
 
 /* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
 static lv_obj_t *g_btn_back = NULL;
+static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in header */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -291,6 +297,9 @@ static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
+static char g_mqtt_address[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
+static char g_mqtt_username[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
+static char g_mqtt_password[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
 
 #ifndef DESKTOP_BUILD
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
@@ -312,6 +321,9 @@ static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
 static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
 static const char* protocol_to_string(uint8_t protocol);
 static void mqtt_publish_state(const char *state);
+static int mqtt_init(void);
+static void mqtt_deinit(void);
+static void mqtt_reconnect(void);
 
 /* MQTT Async Callbacks (MQTT v5.0) */
 static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response);
@@ -817,6 +829,16 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
 
     LOG("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
 
+    /* Check MQTT connection - only allow state transitions if connected */
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int mqtt_ok = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+
+    if (!mqtt_ok) {
+        LOG("NFC: MQTT not connected, ignoring tag scan\n");
+        return;
+    }
+
     /* Process all roles */
     for (int i = 0; i < NUM_ROLES; i++) {
         role_t *role = &g_roles[i];
@@ -959,6 +981,9 @@ static void apply_theme(void) {
     if (g_btn_back) {
         lv_obj_set_style_bg_color(g_btn_back, THEME_BTN_DEFAULT, LV_PART_MAIN);
     }
+    if (g_header_mqtt_status) {
+        lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    }
     
     /* Settings modal */
     if (g_settings_modal) {
@@ -985,6 +1010,20 @@ static void apply_theme(void) {
         lv_obj_set_style_text_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_settings_ta_mqtt_user) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_settings_mqtt_status) {
+        lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
+        /* Color is set dynamically based on connection state */
     }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
@@ -1244,6 +1283,59 @@ static void get_ip_address(char *buf, size_t buflen) {
     snprintf(buf, buflen, "N/A");
 }
 
+/* Check if any MQTT settings changed and trigger reconnect if needed.
+ * Returns 1 if reconnect was triggered, 0 otherwise. */
+static int check_mqtt_settings_changed(void) {
+    int changed = 0;
+
+    if (g_settings_ta_mqtt) {
+        const char *new_addr = lv_textarea_get_text(g_settings_ta_mqtt);
+        if (new_addr && strcmp(new_addr, g_mqtt_address) != 0) {
+            LOG("UI: MQTT address changed from '%s' to '%s'\n", g_mqtt_address, new_addr);
+            strncpy(g_mqtt_address, new_addr, sizeof(g_mqtt_address) - 1);
+            g_mqtt_address[sizeof(g_mqtt_address) - 1] = '\0';
+            changed = 1;
+        }
+    }
+    if (g_settings_ta_mqtt_user) {
+        const char *new_user = lv_textarea_get_text(g_settings_ta_mqtt_user);
+        if (new_user && strcmp(new_user, g_mqtt_username) != 0) {
+            LOG("UI: MQTT username changed\n");
+            strncpy(g_mqtt_username, new_user, sizeof(g_mqtt_username) - 1);
+            g_mqtt_username[sizeof(g_mqtt_username) - 1] = '\0';
+            changed = 1;
+        }
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        const char *new_pswd = lv_textarea_get_text(g_settings_ta_mqtt_pswd);
+        if (new_pswd && strcmp(new_pswd, g_mqtt_password) != 0) {
+            LOG("UI: MQTT password changed\n");
+            strncpy(g_mqtt_password, new_pswd, sizeof(g_mqtt_password) - 1);
+            g_mqtt_password[sizeof(g_mqtt_password) - 1] = '\0';
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+#ifndef DESKTOP_BUILD
+        mqtt_reconnect();
+        /* Immediately update MQTT indicator */
+        if (g_settings_mqtt_status) {
+            pthread_mutex_lock(&g_mqtt_mutex);
+            int connected = g_mqtt_connected;
+            pthread_mutex_unlock(&g_mqtt_mutex);
+            lv_obj_set_style_text_color(g_settings_mqtt_status,
+                connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+            lv_obj_invalidate(g_settings_mqtt_status);
+            lv_refr_now(g_display);
+        }
+#else
+        LOG("Desktop build - MQTT reconnect skipped\n");
+#endif
+    }
+    return changed;
+}
+
 /* Update settings modal info labels */
 static void update_settings_info(void) {
     if (!g_settings_modal) return;
@@ -1259,8 +1351,24 @@ static void update_settings_info(void) {
         lv_label_set_text(g_settings_val_ip, ip);
     }
     if (g_settings_ta_mqtt) {
-        lv_textarea_set_text(g_settings_ta_mqtt, MQTT_ADDRESS);
+        lv_textarea_set_text(g_settings_ta_mqtt, g_mqtt_address);
     }
+    if (g_settings_ta_mqtt_user) {
+        lv_textarea_set_text(g_settings_ta_mqtt_user, g_mqtt_username);
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        lv_textarea_set_text(g_settings_ta_mqtt_pswd, g_mqtt_password);
+    }
+#ifndef DESKTOP_BUILD
+    /* Sync MQTT status icon with current connection state */
+    if (g_settings_mqtt_status) {
+        pthread_mutex_lock(&g_mqtt_mutex);
+        int connected = g_mqtt_connected;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+        lv_obj_set_style_text_color(g_settings_mqtt_status,
+            connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+    }
+#endif
 }
 
 /* Settings button callback - open settings modal */
@@ -1290,23 +1398,40 @@ static void settings_close_btn_cb(lv_event_t *e) {
         }
         lv_refr_now(g_display);
     }
+
+    /* Check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
 }
 
 /* Keyboard value changed callback - refresh textarea display after each keypress */
 static void mqtt_kb_value_changed_cb(lv_event_t *e) {
     (void)e;
-    if (g_settings_ta_mqtt) {
-        lv_obj_invalidate(g_settings_ta_mqtt);
+    if (g_active_textarea) {
+        lv_obj_invalidate(g_active_textarea);
         lv_refr_now(g_display);
     }
 }
 
-/* MQTT textarea click callback - show keyboard */
-static void mqtt_ta_click_cb(lv_event_t *e) {
+/* Keyboard ready callback - Enter key pressed, hide keyboard and apply changes */
+static void mqtt_kb_ready_cb(lv_event_t *e) {
     (void)e;
+    LOG("UI: Keyboard Enter pressed\n");
+    if (g_settings_keyboard) {
+        lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(g_display);
+    }
+    /* Check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
+}
+
+/* MQTT textarea click callback - show keyboard for the clicked textarea */
+static void mqtt_ta_click_cb(lv_event_t *e) {
+    lv_obj_t *ta = lv_event_get_target(e);
     LOG("UI: MQTT textarea clicked\n");
     if (g_settings_keyboard) {
-        lv_keyboard_set_textarea(g_settings_keyboard, g_settings_ta_mqtt);
+        g_active_textarea = ta;
+        lv_keyboard_set_textarea(g_settings_keyboard, ta);
         lv_obj_remove_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(g_settings_keyboard);
         lv_obj_invalidate(g_settings_keyboard);
@@ -1314,20 +1439,32 @@ static void mqtt_ta_click_cb(lv_event_t *e) {
     }
 }
 
-/* Settings modal click callback - hide keyboard when clicking outside textarea */
+/* Settings modal click callback - hide keyboard when clicking outside textarea,
+ * and check if MQTT address was changed */
 static void settings_modal_click_cb(lv_event_t *e) {
     lv_obj_t *target = lv_event_get_target(e);
-    if (!g_settings_keyboard || lv_obj_has_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN))
-        return;
-    /* Walk up from target to check if click was on textarea or keyboard (or their children) */
-    lv_obj_t *obj = target;
-    while (obj != NULL) {
-        if (obj == g_settings_ta_mqtt || obj == g_settings_keyboard) return;
-        obj = lv_obj_get_parent(obj);
+
+    /* If keyboard is visible, check if click was outside textarea/keyboard to hide it */
+    if (g_settings_keyboard && !lv_obj_has_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN)) {
+        /* Walk up from target to check if click was on a textarea or keyboard (or their children) */
+        lv_obj_t *obj = target;
+        int on_input = 0;
+        while (obj != NULL) {
+            if (obj == g_settings_ta_mqtt || obj == g_settings_ta_mqtt_user ||
+                obj == g_settings_ta_mqtt_pswd || obj == g_settings_keyboard) { on_input = 1; break; }
+            obj = lv_obj_get_parent(obj);
+        }
+        if (!on_input) {
+            lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(lv_screen_active());
+            lv_refr_now(g_display);
+        } else {
+            return;  /* Click was on textarea/keyboard, nothing to do */
+        }
     }
-    lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_invalidate(lv_screen_active());
-    lv_refr_now(g_display);
+
+    /* Always check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
 }
 
 static void create_ui(void) {
@@ -1362,7 +1499,7 @@ static void create_ui(void) {
 
     /* Settings button (hamburger menu) in top right corner */
     g_btn_settings = lv_button_create(g_landing_container);
-    lv_obj_set_size(g_btn_settings, 88, 88);
+    lv_obj_set_size(g_btn_settings, 92, 92);
     lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -10, 10);
     lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
@@ -1447,7 +1584,7 @@ static void create_ui(void) {
     /* Header: 720x116 at top */
     g_header = lv_obj_create(scr);
     lv_obj_remove_style_all(g_header);
-    lv_obj_set_size(g_header, 720, 116);
+    lv_obj_set_size(g_header, 720, 112);
     lv_obj_set_pos(g_header, 0, 0);
     lv_obj_set_style_bg_color(g_header, COLOR_HEADER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_header, LV_OPA_COVER, LV_PART_MAIN);
@@ -1482,11 +1619,21 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_back, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_back);
 
+    /* MQTT connection status icon in header - left of exit button */
+    g_header_mqtt_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_header_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_header_mqtt_status, g_btn_back, LV_ALIGN_OUT_LEFT_MID, -20, 0);
+
     /* Roles container - holds all role buttons */
     g_roles_container = lv_obj_create(scr);
     lv_obj_remove_style_all(g_roles_container);
-    lv_obj_set_size(g_roles_container, 720, 604);
-    lv_obj_set_pos(g_roles_container, 0, 116);
+    lv_obj_set_size(g_roles_container, 720, 608);
+    lv_obj_set_pos(g_roles_container, 0, 112);
     lv_obj_set_style_bg_color(g_roles_container, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_roles_container, LV_OPA_COVER, LV_PART_MAIN);
 
@@ -1536,6 +1683,7 @@ static void create_ui(void) {
     lv_obj_set_style_shadow_width(g_settings_modal, 20, LV_PART_MAIN);
     lv_obj_set_style_shadow_opa(g_settings_modal, LV_OPA_50, LV_PART_MAIN);
     lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(g_settings_modal, 0, LV_PART_MAIN);  /* Explicit 0 padding; use 20px offsets in children */
     lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);  /* Start hidden */
 
     /* Settings title */
@@ -1543,13 +1691,13 @@ static void create_ui(void) {
     lv_label_set_text(g_settings_title, "Settings");
     lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 14);
 
     /* Close button (X) */
     g_settings_close_btn = lv_button_create(g_settings_modal);
     lv_obj_t *btn_close = g_settings_close_btn;
-    lv_obj_set_size(btn_close, 84, 84);
-    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 18, -18);
+    lv_obj_set_size(btn_close, 88, 88);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 0, -4);
     lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
@@ -1567,46 +1715,104 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_close, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_close);
 
-    /* Device info labels - keys in darker grey, values in lighter grey */
-    const int info_start_y = 76;
-    const int row_gap = 52;  /* gap between rows */
+    /* Row layout constants */
+    const int row_start_y = 96;
+    const int row_gap = 72;
+    const int textarea_height = 44;
 
-    /* MAC key label */
-    lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_mac_key, "MAC:");
-    lv_obj_set_style_text_color(lbl_mac_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_mac_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_mac_key, LV_ALIGN_TOP_LEFT, 20, info_start_y);
+    /*--- Row 1: MQTT Address + connection indicator ---*/
+    const int mqtt_row_y = row_start_y;
+    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mqtt_key, "MQTT");
+    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
 
-    /* MAC value label */
-    g_settings_val_mac = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_val_mac, "--");
-    lv_obj_set_style_text_color(g_settings_val_mac, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_val_mac, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align_to(g_settings_val_mac, lbl_mac_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
+    lv_obj_set_size(g_settings_ta_mqtt, 488, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
 
-    /* IP key label */
-    lv_obj_t *lbl_ip_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_ip_key, "IP:");
-    lv_obj_set_style_text_color(lbl_ip_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_ip_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 400, info_start_y);
+    /* MQTT connection status icon */
+    g_settings_mqtt_status = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_settings_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_mqtt_status, g_settings_ta_mqtt, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
 
-    /* IP value label */
-    g_settings_val_ip = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_val_ip, "--");
-    lv_obj_set_style_text_color(g_settings_val_ip, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    /*--- Row 2: MQTT User + Password ---*/
+    const int creds_row_y = mqtt_row_y + row_gap;
 
-    /* Color Theme row - between MAC/IP and MQTT */
-    const int theme_row_y = info_start_y + row_gap;
+    lv_obj_t *lbl_user_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_user_key, "User");
+    lv_obj_set_style_text_color(lbl_user_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_user_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_user_key, LV_ALIGN_TOP_LEFT, 20, creds_row_y);
+
+    g_settings_ta_mqtt_user = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_user, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_user, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_user, "username");
+    lv_obj_set_size(g_settings_ta_mqtt_user, 240, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_user, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_user, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_ta_mqtt_user, lbl_user_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    lv_obj_t *lbl_pswd_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_pswd_key, "Pswd");
+    lv_obj_set_style_text_color(lbl_pswd_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_pswd_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 368, creds_row_y);
+
+    g_settings_ta_mqtt_pswd = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_pswd, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_pswd, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_pswd, "password");
+    lv_textarea_set_password_mode(g_settings_ta_mqtt_pswd, true);
+    lv_obj_set_size(g_settings_ta_mqtt_pswd, 220, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_pswd, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_ta_mqtt_pswd, lbl_pswd_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    /*--- Row 3: Color Theme buttons ---*/
+    const int theme_row_y = creds_row_y + row_gap - 16;
     const int theme_btn_size = 76;
     const int theme_btn_gap = 16;
 
     /* "Theme:" label */
     lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_theme_key, "Theme:");
+    lv_label_set_text(lbl_theme_key, "Theme");
     lv_obj_set_style_text_color(lbl_theme_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(lbl_theme_key, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_align(lbl_theme_key, LV_ALIGN_TOP_LEFT, 20, theme_row_y + (theme_btn_size - 28) / 2);
@@ -1671,30 +1877,36 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
     lv_obj_center(lbl_light);
 
-    /* MQTT key label - below Color Theme row */
-    const int mqtt_row_y = theme_row_y + theme_btn_size + row_gap - 16;
-    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_mqtt_key, "MQTT:");
-    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
+    /*--- Row 4: MAC and IP labels ---*/
+    const int info_row_y = theme_row_y + theme_btn_size + row_gap - 52;
 
-    /* MQTT value - editable textarea */
-    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
-    lv_textarea_set_text(g_settings_ta_mqtt, "--");
-    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
-    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
-    lv_obj_set_size(g_settings_ta_mqtt, 530, 44);
-    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
-    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    /* MAC key label */
+    lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mac_key, "MAC");
+    lv_obj_set_style_text_color(lbl_mac_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mac_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mac_key, LV_ALIGN_TOP_LEFT, 20, info_row_y);
+
+    /* MAC value label */
+    g_settings_val_mac = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_mac, "--");
+    lv_obj_set_style_text_color(g_settings_val_mac, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_mac, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_mac, lbl_mac_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    /* IP key label */
+    lv_obj_t *lbl_ip_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_ip_key, "IP");
+    lv_obj_set_style_text_color(lbl_ip_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_ip_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 416, info_row_y);
+
+    /* IP value label */
+    g_settings_val_ip = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_ip, "--");
+    lv_obj_set_style_text_color(g_settings_val_ip, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
     LOG("UI: Settings modal created\n");
 
@@ -1746,7 +1958,7 @@ static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response) {
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", MQTT_ADDRESS);
+    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", g_mqtt_address);
 }
 
 /* Callback: Called when connected (including auto-reconnect) */
@@ -1830,13 +2042,13 @@ static int mqtt_init(void) {
 
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
-    rc = MQTTAsync_createWithOptions(&g_mqtt_client, MQTT_ADDRESS, MQTT_CLIENT_ID,
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_address, MQTT_CLIENT_ID,
                           MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
         LOG("MQTT: Failed to create client, rc=%d\n", rc);
         return -1;
     }
-    LOG("MQTT: Created async client for %s (MQTT v5.0)\n", MQTT_ADDRESS);
+    LOG("MQTT: Created async client for %s (MQTT v5.0)\n", g_mqtt_address);
 
     /* Set connected callback - called on connect AND auto-reconnect */
     LOG("MQTT: Setting connected callback...\n");
@@ -1859,8 +2071,8 @@ static int mqtt_init(void) {
     conn_opts.MQTTVersion = MQTTVERSION_5;
     conn_opts.keepAliveInterval = 10;
     conn_opts.cleanstart = 1;  /* MQTT v5.0 uses cleanstart instead of cleansession */
-    conn_opts.username = MQTT_USERNAME;
-    conn_opts.password = MQTT_PASSWORD;
+    conn_opts.username = g_mqtt_username;
+    conn_opts.password = g_mqtt_password;
     conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
     conn_opts.will = &will_opts;
     conn_opts.onSuccess5 = mqtt_on_connect;
@@ -1890,25 +2102,41 @@ static int mqtt_init(void) {
     return 0;
 }
 
+/* Reconnect MQTT client with current g_mqtt_address */
+static void mqtt_reconnect(void) {
+    LOG("MQTT: Reconnecting to new broker address '%s'\n", g_mqtt_address);
+    mqtt_deinit();
+    if (mqtt_init() != 0) {
+        LOG("MQTT: Failed to reconnect to '%s'\n", g_mqtt_address);
+    }
+}
+
 static void mqtt_deinit(void) {
     if (g_mqtt_client) {
         pthread_mutex_lock(&g_mqtt_mutex);
         int connected = g_mqtt_connected;
         pthread_mutex_unlock(&g_mqtt_mutex);
         
+        /* Publish offline state before disconnect if currently connected */
         if (connected) {
-            /* Publish offline state before disconnect */
             mqtt_publish_state("OFF");
-            LOG("MQTT: Disconnecting...\n");
-            
-            MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
-            opts.timeout = MQTT_TIMEOUT;
-            MQTTAsync_disconnect(g_mqtt_client, &opts);
-            
-            pthread_mutex_lock(&g_mqtt_mutex);
-            g_mqtt_connected = 0;
-            pthread_mutex_unlock(&g_mqtt_mutex);
+            /* Brief delay to allow async OFF message to be sent before disconnect */
+            usleep(200000);  /* 200ms */
         }
+
+        /* Always disconnect to stop auto-reconnect thread before destroying client.
+         * This is required even when not connected, otherwise the auto-reconnect
+         * background thread keeps running and MQTTAsync_destroy may not clean up
+         * properly, causing subsequent mqtt_init() to fail silently. */
+        LOG("MQTT: Disconnecting...\n");
+        MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
+        opts.timeout = MQTT_TIMEOUT;
+        MQTTAsync_disconnect(g_mqtt_client, &opts);
+
+        pthread_mutex_lock(&g_mqtt_mutex);
+        g_mqtt_connected = 0;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+
         MQTTAsync_destroy(&g_mqtt_client);
         g_mqtt_client = NULL;
         LOG("MQTT: Client destroyed\n");
@@ -2154,10 +2382,33 @@ int main(int argc, char *argv[]) {
 #endif
 
     /* Main loop */
+#ifndef DESKTOP_BUILD
+    int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
+#endif
     while (g_running) {
 #ifndef DESKTOP_BUILD
         /* Process MQTT queue from main thread */
         mqtt_process_queue();
+
+        /* Update MQTT status icon on connection state change */
+        {
+            pthread_mutex_lock(&g_mqtt_mutex);
+            int connected = g_mqtt_connected;
+            pthread_mutex_unlock(&g_mqtt_mutex);
+            if (connected != last_mqtt_connected) {
+                last_mqtt_connected = connected;
+                if (g_settings_mqtt_status) {
+                    lv_obj_set_style_text_color(g_settings_mqtt_status,
+                        connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_settings_mqtt_status);
+                }
+                if (g_header_mqtt_status) {
+                    lv_obj_set_style_text_color(g_header_mqtt_status,
+                        connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_header_mqtt_status);
+                }
+            }
+        }
 #endif
 
         pthread_mutex_lock(&g_ui_mutex);
