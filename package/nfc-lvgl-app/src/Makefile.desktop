@@ -1,8 +1,11 @@
 # Makefile for nfc-lvgl-app DESKTOP BUILD
 # Builds LVGL + application with SDL2 for x86_64 desktop testing
+# Includes real NFC (via libnfc-nci with LPCUSBSIO) and MQTT support
 #
 # Prerequisites (Ubuntu/Debian):
-#   sudo apt install build-essential libsdl2-dev
+#   sudo apt install build-essential libsdl2-dev libpaho-mqtt-dev
+#   # Build & install libnfc-nci with --enable-lpcusbsio from:
+#   # https://github.com/NXPNFCLinux/linux_libnfc-nci
 #
 # Usage:
 #   make -f Makefile.desktop
@@ -18,11 +21,13 @@ LVGL_DIR = $(CURDIR)/lvgl
 # Include paths
 INCLUDES = -I$(CURDIR) \
            -I$(LVGL_DIR) \
+           -I/usr/local/include \
            -DLV_CONF_INCLUDE_SIMPLE \
            $(shell pkg-config --cflags sdl2)
 
-# Libraries (no MQTT for desktop build)
-LIBS = -lpthread -lm $(shell pkg-config --libs sdl2)
+# Libraries - real NFC (libnfc-nci) and MQTT (paho-mqtt3a)
+LIBS = -L/usr/local/lib -lnfc_nci_linux -lpaho-mqtt3a -lpthread -lm -ludev \
+       $(shell pkg-config --libs sdl2)
 
 # Find ALL LVGL source files recursively
 LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
@@ -83,3 +88,4 @@ check-deps:
 	@echo "Checking dependencies..."
 	@pkg-config --exists sdl2 && echo "  SDL2: OK" || echo "  SDL2: MISSING (install with: sudo apt install libsdl2-dev)"
 	@pkg-config --exists libpaho-mqtt3a && echo "  Paho MQTT: OK" || echo "  Paho MQTT: MISSING (install with: sudo apt install libpaho-mqtt-dev)"
+	@test -f /usr/local/lib/libnfc_nci_linux.so && echo "  libnfc-nci: OK" || echo "  libnfc-nci: MISSING (build with --enable-lpcusbsio from github.com/NXPNFCLinux/linux_libnfc-nci)"

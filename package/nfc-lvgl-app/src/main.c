@@ -15,11 +15,12 @@
 #else
 #include <linux/fb.h>
 #include <linux/input.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
 #endif
 
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <linux/if_packet.h>
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -41,13 +42,10 @@ LV_IMAGE_DECLARE(logo_short);
 #define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast) */
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
 #define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
+#define FA_ICON_NFC            "\xEF\x94\x99"  /* U+F519 - nfc-symbol (NFC status) */
 
-#ifdef DESKTOP_BUILD
-#include "linux_nfc_api_stub.h"
-#else
 #include "linux_nfc_api.h"
 #include "MQTTAsync.h"
-#endif
 
 #define DISPLAY_WIDTH   720
 #define DISPLAY_HEIGHT  720
@@ -257,6 +255,7 @@ static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_uc_map[] = {
 static lv_obj_t *g_roles_container = NULL;
 static lv_obj_t *g_btn_back = NULL;
 static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in header */
+static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -290,19 +289,18 @@ static lv_indev_t *g_touch_indev = NULL;
 static int g_touch_x = 0;
 static int g_touch_y = 0;
 static int g_touch_pressed = 0;
+#endif
 
 /* MQTT Client (Async) */
 static MQTTAsync g_mqtt_client = NULL;
 static volatile int g_mqtt_connected = 0;
 static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
-#endif
 
 static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
 static char g_mqtt_address[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
 static char g_mqtt_username[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
 static char g_mqtt_password[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
 
-#ifndef DESKTOP_BUILD
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
 static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
 
@@ -330,7 +328,6 @@ static void mqtt_reconnect(void);
 static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response);
 static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response);
 static void mqtt_on_connected(void *context, char *cause);
-#endif /* !DESKTOP_BUILD */
 
 /*====================
    TICK FUNCTION
@@ -797,7 +794,6 @@ static void role_btn_event_cb(lv_event_t *e) {
 /*====================
    NFC TAG HANDLING
  *====================*/
-#ifndef DESKTOP_BUILD
 /* Convert NFC protocol value to human-readable string */
 static const char* protocol_to_string(uint8_t protocol) {
     switch (protocol) {
@@ -957,7 +953,6 @@ static void *nfc_thread(void *arg) {
 
     return NULL;
 }
-#endif /* !DESKTOP_BUILD */
 
 /*====================
    UI SETUP
@@ -1009,6 +1004,9 @@ static void apply_theme(void) {
     }
     if (g_header_mqtt_status) {
         lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    }
+    if (g_header_nfc_status) {
+        lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
     }
     
     /* Settings modal */
@@ -1378,7 +1376,6 @@ static int check_mqtt_settings_changed(void) {
     }
 
     if (changed) {
-#ifndef DESKTOP_BUILD
         mqtt_reconnect();
         /* Immediately update MQTT indicator */
         if (g_settings_mqtt_status) {
@@ -1389,9 +1386,6 @@ static int check_mqtt_settings_changed(void) {
                 connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
             lv_obj_invalidate(g_settings_mqtt_status);
         }
-#else
-        LOG("Desktop build - MQTT reconnect skipped\n");
-#endif
     }
     return changed;
 }
@@ -1419,7 +1413,6 @@ static void update_settings_info(void) {
     if (g_settings_ta_mqtt_pswd) {
         lv_textarea_set_text(g_settings_ta_mqtt_pswd, g_mqtt_password);
     }
-#ifndef DESKTOP_BUILD
     /* Sync MQTT status icon with current connection state */
     if (g_settings_mqtt_status) {
         pthread_mutex_lock(&g_mqtt_mutex);
@@ -1428,7 +1421,6 @@ static void update_settings_info(void) {
         lv_obj_set_style_text_color(g_settings_mqtt_status,
             connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
     }
-#endif
 }
 
 /* Settings button callback - open settings modal */
@@ -1687,6 +1679,16 @@ static void create_ui(void) {
     lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
     lv_obj_align_to(g_header_mqtt_status, g_btn_back, LV_ALIGN_OUT_LEFT_MID, -20, 0);
+
+    /* NFC status icon in header - left of MQTT status icon */
+    g_header_nfc_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_nfc_status, FA_ICON_NFC);
+    lv_obj_set_style_text_font(g_header_nfc_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_nfc_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_nfc_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_nfc_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_header_nfc_status, g_header_mqtt_status, LV_ALIGN_OUT_LEFT_MID, -16, 0);
 
     /* Roles container - holds all role buttons */
     g_roles_container = lv_obj_create(scr);
@@ -2005,7 +2007,6 @@ static void create_ui(void) {
     LOG("UI: UI creation complete.\n");
 }
 
-#ifndef DESKTOP_BUILD
 /*====================
    MQTT CLIENT (Async with Auto-Reconnect)
  *====================*/
@@ -2218,18 +2219,39 @@ static void mqtt_deinit(void) {
 
 static void get_mac_address(void) {
     unsigned char mac[6] = {0, 0, 0, 0, 0, 0};
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock >= 0) {
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
+    struct ifaddrs *ifaddr, *ifa;
 
-        if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
-            memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+    if (getifaddrs(&ifaddr) == 0) {
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL)
+                continue;
+            /* Skip loopback and non-packet (AF_PACKET=17) interfaces */
+            if (strcmp(ifa->ifa_name, "lo") == 0)
+                continue;
+            if (ifa->ifa_addr->sa_family != AF_PACKET)
+                continue;
+            /* Use SIOCGIFHWADDR to get MAC for this interface */
+            int sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sock >= 0) {
+                struct ifreq ifr;
+                memset(&ifr, 0, sizeof(ifr));
+                strncpy(ifr.ifr_name, ifa->ifa_name, IFNAMSIZ - 1);
+                if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+                    memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+                    /* Check it's not all zeros */
+                    if (mac[0] || mac[1] || mac[2] || mac[3] || mac[4] || mac[5]) {
+                        close(sock);
+                        freeifaddrs(ifaddr);
+                        goto found;
+                    }
+                }
+                close(sock);
+            }
         }
-        close(sock);
+        freeifaddrs(ifaddr);
     }
 
+found:
     snprintf(g_device_mac, sizeof(g_device_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
@@ -2338,7 +2360,6 @@ static void mqtt_process_queue(void) {
         mqtt_publish_tag_event(tag_id, protocol);
     }
 }
-#endif /* !DESKTOP_BUILD */
 
 /*====================
    SIGNAL HANDLER
@@ -2354,9 +2375,7 @@ static void signal_handler(int sig) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
-#ifndef DESKTOP_BUILD
     pthread_t nfc_tid;
-#endif
 
     /* Setup signal handlers */
     signal(SIGINT, signal_handler);
@@ -2443,7 +2462,6 @@ int main(int argc, char *argv[]) {
     lv_obj_invalidate(lv_screen_active());
     lv_refr_now(g_display);
 
-#ifndef DESKTOP_BUILD
     get_mac_address();
 
     /* Initialize MQTT client */
@@ -2454,21 +2472,20 @@ int main(int argc, char *argv[]) {
     /* Start NFC thread */
     if (pthread_create(&nfc_tid, NULL, nfc_thread, NULL) != 0) {
         fprintf(stderr, "Failed to start NFC thread\n");
+#ifdef DESKTOP_BUILD
+        sdl_deinit();
+#else
         touch_deinit();
         fb_deinit();
         restore_console();
+#endif
         return 1;
     }
-#else
-    LOG("Desktop build - NFC and MQTT disabled\n");
-#endif
 
     /* Main loop */
-#ifndef DESKTOP_BUILD
     int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
-#endif
+    int last_nfc_ready = -1;       /* Track NFC status changes for UI */
     while (atomic_load(&g_running)) {
-#ifndef DESKTOP_BUILD
         /* Process MQTT queue from main thread */
         mqtt_process_queue();
 
@@ -2491,7 +2508,19 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-#endif
+
+        /* Update NFC status icon on state change */
+        {
+            int nfc_ready = atomic_load(&g_nfc_ready);
+            if (nfc_ready != last_nfc_ready) {
+                last_nfc_ready = nfc_ready;
+                if (g_header_nfc_status) {
+                    lv_obj_set_style_text_color(g_header_nfc_status,
+                        nfc_ready ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_header_nfc_status);
+                }
+            }
+        }
 
         pthread_mutex_lock(&g_ui_mutex);
         
@@ -2517,11 +2546,11 @@ int main(int argc, char *argv[]) {
     }
 
     /* Cleanup */
+    pthread_join(nfc_tid, NULL);
+    mqtt_deinit();
 #ifdef DESKTOP_BUILD
     sdl_deinit();
 #else
-    pthread_join(nfc_tid, NULL);
-    mqtt_deinit();
     touch_deinit();
     fb_deinit();
     restore_console();
