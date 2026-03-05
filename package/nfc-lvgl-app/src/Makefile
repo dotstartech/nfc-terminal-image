@@ -25,6 +25,8 @@ LVGL_SRC = $(shell find $(LVGL_DIR)/src -name '*.c' 2>/dev/null)
 APP_SRC = main.c \
          fonts/fa_solid_48.c \
          fonts/fa_regular_48.c \
+         fonts/lv_font_montserrat_52.c \
+         fonts/lv_font_montserrat_56.c \
          logo_short.c
 
 # Object files

@@ -30,6 +30,8 @@
 /* Font Awesome icon fonts */
 LV_FONT_DECLARE(fa_solid_48);
 LV_FONT_DECLARE(fa_regular_48);
+LV_FONT_DECLARE(lv_font_montserrat_52);
+LV_FONT_DECLARE(lv_font_montserrat_56);
 
 /* Logo image */
 LV_IMAGE_DECLARE(logo_short);
@@ -192,6 +194,36 @@ typedef struct {
 } role_t;
 
 /*====================
+   CHECK-IN/OUT STATE MAP
+ *====================*/
+#define CHECKIN_MAP_SIZE 64
+typedef struct {
+    char tag_id[64];
+    bool checked_in;
+    bool used;
+} checkin_entry_t;
+static checkin_entry_t g_checkin_map[CHECKIN_MAP_SIZE] = {0};
+
+/* Look up or create entry for a tag. Returns pointer to entry, or NULL if map full. */
+static checkin_entry_t *checkin_map_get_or_create(const char *tag_id) {
+    int first_free = -1;
+    for (int i = 0; i < CHECKIN_MAP_SIZE; i++) {
+        if (g_checkin_map[i].used && strcmp(g_checkin_map[i].tag_id, tag_id) == 0) {
+            return &g_checkin_map[i];
+        }
+        if (!g_checkin_map[i].used && first_free < 0) {
+            first_free = i;
+        }
+    }
+    if (first_free < 0) return NULL;  /* Map full */
+    checkin_entry_t *e = &g_checkin_map[first_free];
+    snprintf(e->tag_id, sizeof(e->tag_id), "%s", tag_id);
+    e->checked_in = false;  /* Will be toggled to true on first scan */
+    e->used = true;
+    return e;
+}
+
+/*====================
    GLOBAL STATE
  *====================*/
 #define NUM_ROLES 8
@@ -253,6 +285,13 @@ static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_uc_map[] = {
     LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6
 };
+
+/* Check-in/Check-out app */
+static lv_obj_t *g_checkin_container = NULL;
+static lv_obj_t *g_checkin_lbl_tag = NULL;
+static lv_obj_t *g_checkin_lbl_state = NULL;
+static lv_obj_t *g_checkin_lbl_time = NULL;
+static lv_timer_t *g_checkin_hide_timer = NULL;  /* Timer to auto-hide after 3 seconds */
 
 /* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
@@ -320,6 +359,7 @@ static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Forward declarations */
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
+static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in);
 static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
 static const char* protocol_to_string(uint8_t protocol);
 static void mqtt_publish_state(const char *state);
@@ -761,7 +801,7 @@ static void update_status_label(void) {
     }
 
     lv_label_set_text(g_status_label, status);
-    LOG("UI: set label text to: '%s'\n", status);
+    /* LOG("UI: set label text to: '%s'\n", status); */
 }
 
 /*====================
@@ -833,22 +873,36 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
         return;
     }
 
-    /* Lock UI mutex to protect shared role state and g_last_tag_id */
+    /* Lock UI mutex to protect shared state and g_last_tag_id */
     pthread_mutex_lock(&g_ui_mutex);
 
-    /* Process all roles */
-    for (int i = 0; i < NUM_ROLES; i++) {
-        role_t *role = &g_roles[i];
-        if (role->state == ROLE_STATE_CHECKED_IN) {
-            if (same_tag && strcmp(role->tag_id, tag_id) == 0) {
-                /* Same tag -> check out */
-                role->state = ROLE_STATE_UNSELECTED;
-                role->tag_id[0] = '\0';
+    if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+        /* Check-in/Check-out mode: toggle state in map */
+        checkin_entry_t *entry = checkin_map_get_or_create(tag_id);
+        if (entry) {
+            entry->checked_in = !entry->checked_in;
+            LOG("NFC: Check-in map: tag=%s -> %s\n", tag_id,
+                entry->checked_in ? "checked-in" : "checked-out");
+            /* Publish state change via MQTT */
+            mqtt_publish_checkin_state(tag_id, entry->checked_in);
+        } else {
+            LOG("NFC: Check-in map full, cannot track tag %s\n", tag_id);
+        }
+    } else {
+        /* Roles booking mode: process all roles */
+        for (int i = 0; i < NUM_ROLES; i++) {
+            role_t *role = &g_roles[i];
+            if (role->state == ROLE_STATE_CHECKED_IN) {
+                if (same_tag && strcmp(role->tag_id, tag_id) == 0) {
+                    /* Same tag -> check out */
+                    role->state = ROLE_STATE_UNSELECTED;
+                    role->tag_id[0] = '\0';
+                }
+            } else if (role->state == ROLE_STATE_SELECTED) {
+                /* Selected -> check in */
+                role->state = ROLE_STATE_CHECKED_IN;
+                snprintf(role->tag_id, sizeof(role->tag_id), "%s", tag_id);
             }
-        } else if (role->state == ROLE_STATE_SELECTED) {
-            /* Selected -> check in */
-            role->state = ROLE_STATE_CHECKED_IN;
-            snprintf(role->tag_id, sizeof(role->tag_id), "%s", tag_id);
         }
     }
 
@@ -1104,6 +1158,18 @@ static void apply_theme(void) {
         }
     }
     
+    /* Check-in/Check-out page */
+    if (g_checkin_container) {
+        lv_obj_set_style_bg_color(g_checkin_container, THEME_BG, LV_PART_MAIN);
+    }
+    if (g_checkin_lbl_tag) {
+        lv_obj_set_style_text_color(g_checkin_lbl_tag, THEME_TEXT, LV_PART_MAIN);
+    }
+    /* g_checkin_lbl_state color is set dynamically (green/yellow) - don't override */
+    if (g_checkin_lbl_time) {
+        lv_obj_set_style_text_color(g_checkin_lbl_time, THEME_TEXT, LV_PART_MAIN);
+    }
+
     lv_obj_invalidate(scr);
 }
 
@@ -1207,6 +1273,80 @@ static void fade_in_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
     lv_anim_start(&a);
 }
 
+/* Fade out an LVGL object: animate to transparent, then hide */
+static void fade_out_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay);
+static void fade_out_done_cb(lv_anim_t *a) {
+    lv_obj_t *obj = lv_anim_get_user_data(a);
+    if (obj) lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+}
+static void fade_out_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_delay(&a, delay);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_set_user_data(&a, obj);
+    lv_anim_set_completed_cb(&a, fade_out_done_cb);
+    lv_anim_start(&a);
+}
+
+/* Timer callback: fade out the check-in info labels after 3 seconds */
+static void checkin_hide_timer_cb(lv_timer_t *timer) {
+    (void)timer;
+    LOG("UI: Check-in display timeout - fading out\n");
+    if (g_checkin_lbl_tag)   fade_out_obj(g_checkin_lbl_tag, 400, 0);
+    if (g_checkin_lbl_state) fade_out_obj(g_checkin_lbl_state, 400, 50);
+    if (g_checkin_lbl_time)  fade_out_obj(g_checkin_lbl_time, 400, 100);
+    /* Delete timer (one-shot) */
+    if (g_checkin_hide_timer) {
+        lv_timer_delete(g_checkin_hide_timer);
+        g_checkin_hide_timer = NULL;
+    }
+}
+
+/* Show check-in/out result with fade-in + auto-hide after 3 seconds */
+static void checkin_show_result(const char *tag_id, bool checked_in) {
+    /* Format time */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_str[16];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
+
+    /* Format tag label (truncate long IDs) */
+    char tag_buf[80];
+    snprintf(tag_buf, sizeof(tag_buf), "Tag: %s", tag_id);
+
+    /* Update labels */
+    if (g_checkin_lbl_tag)   lv_label_set_text(g_checkin_lbl_tag, tag_buf);
+    if (g_checkin_lbl_state) {
+        lv_label_set_text(g_checkin_lbl_state, checked_in ? "Checked-in" : "Checked-out");
+        lv_obj_set_style_text_color(g_checkin_lbl_state,
+            checked_in ? COLOR_STATUS_GREEN : COLOR_YELLOW, LV_PART_MAIN);
+    }
+    if (g_checkin_lbl_time)  lv_label_set_text(g_checkin_lbl_time, time_str);
+
+    /* Cancel any existing hide timer */
+    if (g_checkin_hide_timer) {
+        lv_timer_delete(g_checkin_hide_timer);
+        g_checkin_hide_timer = NULL;
+    }
+
+    /* Fade in all 3 labels */
+    if (g_checkin_lbl_tag)   fade_in_obj(g_checkin_lbl_tag, 300, 0);
+    if (g_checkin_lbl_state) fade_in_obj(g_checkin_lbl_state, 300, 50);
+    if (g_checkin_lbl_time)  fade_in_obj(g_checkin_lbl_time, 300, 100);
+
+    /* Start 3-second timer to auto-hide */
+    g_checkin_hide_timer = lv_timer_create(checkin_hide_timer_cb, 3000, NULL);
+    lv_timer_set_repeat_count(g_checkin_hide_timer, 1);
+
+    LOG("UI: Check-in display: %s -> %s at %s\n", tag_id,
+        checked_in ? "Checked-in" : "Checked-out", time_str);
+}
+
 /* Show/hide pages based on current page */
 static void show_page(app_page_t page) {
     LOG("UI: Switching to page %d\n", page);
@@ -1214,7 +1354,7 @@ static void show_page(app_page_t page) {
     /* Lock theme when leaving landing page */
     if (g_current_page == PAGE_LANDING && page != PAGE_LANDING) {
         g_theme_locked = true;
-        LOG("UI: Theme locked to %d\n", g_current_theme);
+        /* LOG("UI: Theme locked to %d\n", g_current_theme); */
     }
     
     g_current_page = page;
@@ -1222,7 +1362,14 @@ static void show_page(app_page_t page) {
     /* Hide all pages first */
     if (g_landing_container) lv_obj_add_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
     if (g_roles_container) lv_obj_add_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_checkin_container) lv_obj_add_flag(g_checkin_container, LV_OBJ_FLAG_HIDDEN);
     if (g_header) lv_obj_add_flag(g_header, LV_OBJ_FLAG_HIDDEN);
+    
+    /* Cancel check-in hide timer when leaving page */
+    if (g_checkin_hide_timer && page != PAGE_SIMPLE_CHECKIN) {
+        lv_timer_delete(g_checkin_hide_timer);
+        g_checkin_hide_timer = NULL;
+    }
     
     /* Show the selected page with fade-in transition */
     switch (page) {
@@ -1236,9 +1383,15 @@ static void show_page(app_page_t page) {
             if (g_roles_container) fade_in_obj(g_roles_container, 250, 50);
             break;
         case PAGE_SIMPLE_CHECKIN:
-            LOG("UI: Showing simple check-in page (not implemented)\n");
-            /* Not implemented yet - stay on landing */
-            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
+            LOG("UI: Showing simple check-in page\n");
+            if (g_header) fade_in_obj(g_header, 250, 0);
+            if (g_checkin_container) {
+                fade_in_obj(g_checkin_container, 250, 50);
+                /* Hide info labels initially - they appear on tag scan */
+                if (g_checkin_lbl_tag)   lv_obj_add_flag(g_checkin_lbl_tag, LV_OBJ_FLAG_HIDDEN);
+                if (g_checkin_lbl_state) lv_obj_add_flag(g_checkin_lbl_state, LV_OBJ_FLAG_HIDDEN);
+                if (g_checkin_lbl_time)  lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
+            }
             break;
         case PAGE_EV_CHARGING:
             LOG("UI: Showing EV charging page (not implemented)\n");
@@ -1289,8 +1442,8 @@ static void modal_close_btn_press_effect_cb(lv_event_t *e) {
 /* Landing page button callbacks */
 static void landing_btn_simple_checkin_cb(lv_event_t *e) {
     (void)e;
-    LOG("Landing: Check-in/Check-out selected (not implemented)\n");
-    /* Not implemented yet */
+    LOG("UI: Landing page - Check-in/Check-out selected\n");
+    show_page(PAGE_SIMPLE_CHECKIN);
 }
 
 static void landing_btn_roles_booking_cb(lv_event_t *e) {
@@ -1488,7 +1641,7 @@ static void mqtt_kb_ready_cb(lv_event_t *e) {
 /* MQTT textarea click callback - show keyboard for the clicked textarea */
 static void mqtt_ta_click_cb(lv_event_t *e) {
     lv_obj_t *ta = lv_event_get_target(e);
-    LOG("UI: MQTT textarea clicked\n");
+    /* LOG("UI: MQTT textarea clicked\n"); */
     if (g_settings_keyboard) {
         /* Clear focus from previous textarea */
         if (g_active_textarea && g_active_textarea != ta) {
@@ -1646,6 +1799,49 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_32, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl3, THEME_BTN_TEXT, LV_PART_MAIN);
     lv_obj_center(lbl3);
+
+    /*========================================
+       CHECK-IN / CHECK-OUT APP
+     *========================================*/
+    g_checkin_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_checkin_container);
+    lv_obj_set_size(g_checkin_container, 720, 608);
+    lv_obj_set_pos(g_checkin_container, 0, 112);
+    lv_obj_set_style_bg_color(g_checkin_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_checkin_container, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(g_checkin_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_checkin_container, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 1: "Tag: ..." label */
+    g_checkin_lbl_tag = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_tag, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_tag, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_tag, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_tag, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_tag, 680);
+    lv_obj_align(g_checkin_lbl_tag, LV_ALIGN_CENTER, 0, -80);
+    lv_label_set_long_mode(g_checkin_lbl_tag, LV_LABEL_LONG_DOT);
+    lv_obj_add_flag(g_checkin_lbl_tag, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 2: "Checked-in" / "Checked-out" label */
+    g_checkin_lbl_state = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_state, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_state, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_state, COLOR_STATUS_GREEN, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_state, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_state, 680);
+    lv_obj_align(g_checkin_lbl_state, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(g_checkin_lbl_state, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 3: Time "HH:MM:SS" label */
+    g_checkin_lbl_time = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_time, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_time, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_time, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_time, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_time, 680);
+    lv_obj_align(g_checkin_lbl_time, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
 
     /*========================================
        ROLES BOOKING APP
@@ -2312,6 +2508,45 @@ found:
     LOG("MQTT: State topic: %s\n", g_mqtt_state_topic);
 }
 
+/* Publish check-in/check-out state change to data/<TAG-ID> */
+static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in) {
+    if (!g_mqtt_client) {
+        LOG("MQTT: No client, skipping check-in publish\n");
+        return;
+    }
+
+    /* Build tag ID without colons: "A4:FB:3B:A0" -> "A4FB3BA0" */
+    char tag_no_colons[64];
+    int j = 0;
+    for (int i = 0; tag_id[i] && j < (int)sizeof(tag_no_colons) - 1; i++) {
+        if (tag_id[i] != ':') {
+            tag_no_colons[j++] = tag_id[i];
+        }
+    }
+    tag_no_colons[j] = '\0';
+
+    /* Build topic: data/<TAG-ID> */
+    char topic[128];
+    snprintf(topic, sizeof(topic), "data/%s", tag_no_colons);
+
+    /* Build JSON payload */
+    const char *payload = checked_in ? "{\"state\":\"IN\"}" : "{\"state\":\"OUT\"}";
+
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = (void *)payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 0;
+
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, topic, &msg, &resp);
+    if (rc == MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Check-in publish queued payload='%s' to topic='%s'\n", payload, topic);
+    } else {
+        LOG("MQTT: Failed to queue check-in publish, rc=%d\n", rc);
+    }
+}
+
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
     pthread_mutex_lock(&g_mqtt_mutex);
     int connected = g_mqtt_connected;
@@ -2574,10 +2809,24 @@ int main(int argc, char *argv[]) {
         /* Check if NFC thread requested UI refresh */
         if (atomic_load(&g_ui_needs_refresh)) {
             atomic_store(&g_ui_needs_refresh, 0);
-            update_status_label();
-            for (int i = 0; i < NUM_ROLES; i++) {
-                update_button_color(&g_roles[i]);
+            
+            if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+                /* Check-in mode: update header + show tag result with animation */
+                update_status_label();
+                if (g_last_tag_id[0] != '\0') {
+                    checkin_entry_t *entry = checkin_map_get_or_create(g_last_tag_id);
+                    if (entry) {
+                        checkin_show_result(g_last_tag_id, entry->checked_in);
+                    }
+                }
+            } else {
+                /* Roles booking mode */
+                update_status_label();
+                for (int i = 0; i < NUM_ROLES; i++) {
+                    update_button_color(&g_roles[i]);
+                }
             }
+            
             lv_obj_invalidate(lv_screen_active());
             LOG("UI: Refreshed from main loop\n");
         }
