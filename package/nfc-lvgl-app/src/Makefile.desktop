@@ -39,9 +39,11 @@ SDL_DRV_SRC = $(wildcard $(LVGL_DIR)/src/drivers/sdl/*.c)
 APP_SRC = main.c \
          fonts/fa_solid_48.c \
          fonts/fa_regular_48.c \
+         fonts/fa_brands_nfc_48.c \
+         fonts/fa_brands_nfc_360.c \
          fonts/lv_font_montserrat_52.c \
          fonts/lv_font_montserrat_56.c \
-         logo_short.c
+         logo_small.c
 
 # Object files (in desktop_build subdirectory to avoid conflicts)
 BUILD_DIR = desktop_build

@@ -30,11 +30,13 @@
 /* Font Awesome icon fonts */
 LV_FONT_DECLARE(fa_solid_48);
 LV_FONT_DECLARE(fa_regular_48);
+LV_FONT_DECLARE(fa_brands_nfc_48);
+LV_FONT_DECLARE(fa_brands_nfc_360);
 LV_FONT_DECLARE(lv_font_montserrat_52);
 LV_FONT_DECLARE(lv_font_montserrat_56);
 
 /* Logo image */
-LV_IMAGE_DECLARE(logo_short);
+LV_IMAGE_DECLARE(logo_small);
 
 /* Font Awesome Unicode codepoints (UTF-8 encoded) */
 #define FA_ICON_BARS           "\xEF\x83\x89"  /* U+F0C9 - hamburger menu */
@@ -44,7 +46,7 @@ LV_IMAGE_DECLARE(logo_short);
 #define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast) */
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
 #define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
-#define FA_ICON_NFC            "\xEF\x94\x99"  /* U+F519 - nfc-symbol (NFC status) */
+#define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol (FA Brands) */
 
 #include "linux_nfc_api.h"
 #include "MQTTAsync.h"
@@ -292,6 +294,8 @@ static lv_obj_t *g_checkin_lbl_tag = NULL;
 static lv_obj_t *g_checkin_lbl_state = NULL;
 static lv_obj_t *g_checkin_lbl_time = NULL;
 static lv_timer_t *g_checkin_hide_timer = NULL;  /* Timer to auto-hide after 3 seconds */
+static lv_obj_t *g_checkin_nfc_icon = NULL;       /* NFC symbol displayed while waiting */
+static lv_anim_t g_checkin_pulse_anim;             /* Pulsing animation for NFC icon */
 
 /* Roles booking app */
 static lv_obj_t *g_roles_container = NULL;
@@ -1169,6 +1173,9 @@ static void apply_theme(void) {
     if (g_checkin_lbl_time) {
         lv_obj_set_style_text_color(g_checkin_lbl_time, THEME_TEXT, LV_PART_MAIN);
     }
+    if (g_checkin_nfc_icon) {
+        lv_obj_set_style_text_color(g_checkin_nfc_icon, THEME_BTN_SELECTED, LV_PART_MAIN);
+    }
 
     lv_obj_invalidate(scr);
 }
@@ -1293,13 +1300,73 @@ static void fade_out_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
     lv_anim_start(&a);
 }
 
-/* Timer callback: fade out the check-in info labels after 3 seconds */
+/* Start pulsing animation on the NFC icon (opacity 40% <-> 100%) */
+static void checkin_start_pulse(void) {
+    if (!g_checkin_nfc_icon) return;
+    lv_anim_init(&g_checkin_pulse_anim);
+    lv_anim_set_var(&g_checkin_pulse_anim, g_checkin_nfc_icon);
+    lv_anim_set_values(&g_checkin_pulse_anim, LV_OPA_40, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&g_checkin_pulse_anim, anim_opa_cb);
+    lv_anim_set_duration(&g_checkin_pulse_anim, 1285);
+    lv_anim_set_playback_duration(&g_checkin_pulse_anim, 1285);
+    lv_anim_set_repeat_count(&g_checkin_pulse_anim, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&g_checkin_pulse_anim, lv_anim_path_ease_in_out);
+    lv_anim_start(&g_checkin_pulse_anim);
+}
+
+/* Stop pulsing and reset NFC icon opacity */
+static void checkin_stop_pulse(void) {
+    if (!g_checkin_nfc_icon) return;
+    lv_anim_delete(g_checkin_nfc_icon, anim_opa_cb);
+}
+
+/* Fade-in callback for NFC icon: restart pulse after it becomes visible */
+static void checkin_nfc_icon_fade_in_done_cb(lv_anim_t *a) {
+    (void)a;
+    checkin_start_pulse();
+}
+
+/* Show NFC icon with fade-in + pulse */
+static void checkin_show_nfc_icon(void) {
+    if (!g_checkin_nfc_icon) return;
+    checkin_stop_pulse();
+    lv_obj_set_style_opa(g_checkin_nfc_icon, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, g_checkin_nfc_icon);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, 400);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_completed_cb(&a, checkin_nfc_icon_fade_in_done_cb);
+    lv_anim_start(&a);
+}
+
+/* Timer callback: fade out the check-in info labels after 3 seconds, then show NFC icon again */
 static void checkin_hide_timer_cb(lv_timer_t *timer) {
     (void)timer;
     LOG("UI: Check-in display timeout - fading out\n");
     if (g_checkin_lbl_tag)   fade_out_obj(g_checkin_lbl_tag, 400, 0);
     if (g_checkin_lbl_state) fade_out_obj(g_checkin_lbl_state, 400, 50);
     if (g_checkin_lbl_time)  fade_out_obj(g_checkin_lbl_time, 400, 100);
+    /* Show NFC icon again after labels have faded out (500ms delay) */
+    if (g_checkin_nfc_icon) {
+        /* Use a delayed fade-in so it appears after labels disappear */
+        checkin_stop_pulse();
+        lv_obj_set_style_opa(g_checkin_nfc_icon, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_remove_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, g_checkin_nfc_icon);
+        lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+        lv_anim_set_exec_cb(&a, anim_opa_cb);
+        lv_anim_set_duration(&a, 400);
+        lv_anim_set_delay(&a, 500);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_completed_cb(&a, checkin_nfc_icon_fade_in_done_cb);
+        lv_anim_start(&a);
+    }
     /* Delete timer (one-shot) */
     if (g_checkin_hide_timer) {
         lv_timer_delete(g_checkin_hide_timer);
@@ -1324,7 +1391,7 @@ static void checkin_show_result(const char *tag_id, bool checked_in) {
     if (g_checkin_lbl_state) {
         lv_label_set_text(g_checkin_lbl_state, checked_in ? "Checked-in" : "Checked-out");
         lv_obj_set_style_text_color(g_checkin_lbl_state,
-            checked_in ? COLOR_STATUS_GREEN : COLOR_YELLOW, LV_PART_MAIN);
+            THEME_BTN_CHECKED, LV_PART_MAIN);
     }
     if (g_checkin_lbl_time)  lv_label_set_text(g_checkin_lbl_time, time_str);
 
@@ -1334,10 +1401,16 @@ static void checkin_show_result(const char *tag_id, bool checked_in) {
         g_checkin_hide_timer = NULL;
     }
 
-    /* Fade in all 3 labels */
-    if (g_checkin_lbl_tag)   fade_in_obj(g_checkin_lbl_tag, 300, 0);
-    if (g_checkin_lbl_state) fade_in_obj(g_checkin_lbl_state, 300, 50);
-    if (g_checkin_lbl_time)  fade_in_obj(g_checkin_lbl_time, 300, 100);
+    /* Fade out NFC icon first */
+    if (g_checkin_nfc_icon) {
+        checkin_stop_pulse();
+        fade_out_obj(g_checkin_nfc_icon, 200, 0);
+    }
+
+    /* Fade in all 3 labels (slightly delayed to let icon fade out) */
+    if (g_checkin_lbl_tag)   fade_in_obj(g_checkin_lbl_tag, 300, 200);
+    if (g_checkin_lbl_state) fade_in_obj(g_checkin_lbl_state, 300, 250);
+    if (g_checkin_lbl_time)  fade_in_obj(g_checkin_lbl_time, 300, 300);
 
     /* Start 3-second timer to auto-hide */
     g_checkin_hide_timer = lv_timer_create(checkin_hide_timer_cb, 3000, NULL);
@@ -1365,10 +1438,13 @@ static void show_page(app_page_t page) {
     if (g_checkin_container) lv_obj_add_flag(g_checkin_container, LV_OBJ_FLAG_HIDDEN);
     if (g_header) lv_obj_add_flag(g_header, LV_OBJ_FLAG_HIDDEN);
     
-    /* Cancel check-in hide timer when leaving page */
-    if (g_checkin_hide_timer && page != PAGE_SIMPLE_CHECKIN) {
-        lv_timer_delete(g_checkin_hide_timer);
-        g_checkin_hide_timer = NULL;
+    /* Cancel check-in hide timer and pulse when leaving page */
+    if (page != PAGE_SIMPLE_CHECKIN) {
+        if (g_checkin_hide_timer) {
+            lv_timer_delete(g_checkin_hide_timer);
+            g_checkin_hide_timer = NULL;
+        }
+        checkin_stop_pulse();
     }
     
     /* Show the selected page with fade-in transition */
@@ -1379,11 +1455,13 @@ static void show_page(app_page_t page) {
             break;
         case PAGE_ROLES_BOOKING:
             LOG("UI: Showing roles booking page\n");
+            if (g_status_label) lv_obj_remove_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
             if (g_header) fade_in_obj(g_header, 250, 0);
             if (g_roles_container) fade_in_obj(g_roles_container, 250, 50);
             break;
         case PAGE_SIMPLE_CHECKIN:
             LOG("UI: Showing simple check-in page\n");
+            if (g_status_label) lv_obj_add_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
             if (g_header) fade_in_obj(g_header, 250, 0);
             if (g_checkin_container) {
                 fade_in_obj(g_checkin_container, 250, 50);
@@ -1391,6 +1469,8 @@ static void show_page(app_page_t page) {
                 if (g_checkin_lbl_tag)   lv_obj_add_flag(g_checkin_lbl_tag, LV_OBJ_FLAG_HIDDEN);
                 if (g_checkin_lbl_state) lv_obj_add_flag(g_checkin_lbl_state, LV_OBJ_FLAG_HIDDEN);
                 if (g_checkin_lbl_time)  lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
+                /* Show NFC icon with pulse */
+                checkin_show_nfc_icon();
             }
             break;
         case PAGE_EV_CHARGING:
@@ -1708,7 +1788,7 @@ static void create_ui(void) {
 
     /* Logo image in top left corner */
     lv_obj_t *logo_img = lv_image_create(g_landing_container);
-    lv_image_set_src(logo_img, &logo_short);
+    lv_image_set_src(logo_img, &logo_small);
     lv_image_set_scale(logo_img, 156);
     lv_obj_align(logo_img, LV_ALIGN_TOP_LEFT, -14, -20);
 
@@ -1843,6 +1923,15 @@ static void create_ui(void) {
     lv_obj_align(g_checkin_lbl_time, LV_ALIGN_CENTER, 0, 80);
     lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
 
+    /* NFC icon (centered, shown while waiting for tag) */
+    g_checkin_nfc_icon = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_nfc_icon, FA_ICON_NFC_BRANDS);
+    lv_obj_set_style_text_font(g_checkin_nfc_icon, &fa_brands_nfc_360, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_nfc_icon, THEME_BTN_SELECTED, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_nfc_icon, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(g_checkin_nfc_icon, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+
     /*========================================
        ROLES BOOKING APP
      *========================================*/
@@ -1855,14 +1944,34 @@ static void create_ui(void) {
     lv_obj_set_style_bg_opa(g_header, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_pad_left(g_header, 16, LV_PART_MAIN);
 
-    /* Status label in header, left-aligned, vertically centered */
+    /* NFC status icon in header - left side */
+    g_header_nfc_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_nfc_status, FA_ICON_NFC_BRANDS);
+    lv_obj_set_style_text_font(g_header_nfc_status, &fa_brands_nfc_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_nfc_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_nfc_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_nfc_status, 0, LV_PART_MAIN);
+    lv_obj_align(g_header_nfc_status, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* MQTT connection status icon in header - right of NFC icon */
+    g_header_mqtt_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_header_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_header_mqtt_status, g_header_nfc_status, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /* Status label in header, centered */
     g_status_label = lv_label_create(g_header);
     lv_label_set_text(g_status_label, "Initializing NFC...");
     lv_obj_set_style_text_color(g_status_label, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
-    lv_obj_set_width(g_status_label, 600);
-    lv_obj_align(g_status_label, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_status_label, 480);
+    lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
 
     /* Back button in header, top-right corner */
     g_btn_back = lv_button_create(g_header);
@@ -1884,25 +1993,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_back, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_back);
 
-    /* MQTT connection status icon in header - left of exit button */
-    g_header_mqtt_status = lv_label_create(g_header);
-    lv_label_set_text(g_header_mqtt_status, FA_ICON_NETWORK);
-    lv_obj_set_style_text_font(g_header_mqtt_status, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_set_style_text_color(g_header_mqtt_status, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
-    lv_obj_align_to(g_header_mqtt_status, g_btn_back, LV_ALIGN_OUT_LEFT_MID, -20, 0);
-
-    /* NFC status icon in header - left of MQTT status icon */
-    g_header_nfc_status = lv_label_create(g_header);
-    lv_label_set_text(g_header_nfc_status, FA_ICON_NFC);
-    lv_obj_set_style_text_font(g_header_nfc_status, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_set_style_text_color(g_header_nfc_status, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_header_nfc_status, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_header_nfc_status, 0, LV_PART_MAIN);
-    lv_obj_align_to(g_header_nfc_status, g_header_mqtt_status, LV_ALIGN_OUT_LEFT_MID, -16, 0);
+    /* NFC and MQTT status icons are created above (before status label) */
 
     /* Roles container - holds all role buttons */
     g_roles_container = lv_obj_create(scr);
@@ -2536,12 +2627,12 @@ static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in) {
     msg.payload = (void *)payload;
     msg.payloadlen = (int)strlen(payload);
     msg.qos = MQTT_QOS;
-    msg.retained = 0;
+    msg.retained = 1;
 
     MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
     int rc = MQTTAsync_sendMessage(g_mqtt_client, topic, &msg, &resp);
     if (rc == MQTTASYNC_SUCCESS) {
-        LOG("MQTT: Check-in publish queued payload='%s' to topic='%s'\n", payload, topic);
+        LOG("MQTT: Check-in publish queued payload='%s' to topic='%s' (retained)\n", payload, topic);
     } else {
         LOG("MQTT: Failed to queue check-in publish, rc=%d\n", rc);
     }
@@ -2811,8 +2902,7 @@ int main(int argc, char *argv[]) {
             atomic_store(&g_ui_needs_refresh, 0);
             
             if (g_current_page == PAGE_SIMPLE_CHECKIN) {
-                /* Check-in mode: update header + show tag result with animation */
-                update_status_label();
+                /* Check-in mode: show tag result with animation (no header label) */
                 if (g_last_tag_id[0] != '\0') {
                     checkin_entry_t *entry = checkin_map_get_or_create(g_last_tag_id);
                     if (entry) {
