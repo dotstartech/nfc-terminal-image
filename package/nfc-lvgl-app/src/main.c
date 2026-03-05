@@ -1557,7 +1557,7 @@ static void create_ui(void) {
     lv_obj_t *logo_img = lv_image_create(g_landing_container);
     lv_image_set_src(logo_img, &logo_short);
     lv_image_set_scale(logo_img, 156);
-    lv_obj_align(logo_img, LV_ALIGN_TOP_LEFT, -16, -20);
+    lv_obj_align(logo_img, LV_ALIGN_TOP_LEFT, -14, -20);
 
     /* Landing page title */
     g_landing_title = lv_label_create(g_landing_container);
@@ -1770,13 +1770,13 @@ static void create_ui(void) {
     lv_label_set_text(g_settings_title, "Settings");
     lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
-    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 14);
+    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 20);
 
     /* Close button (X) */
     g_settings_close_btn = lv_button_create(g_settings_modal);
     lv_obj_t *btn_close = g_settings_close_btn;
     lv_obj_set_size(btn_close, 96, 96);
-    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, 0, -4);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, -2, -2);
     lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
@@ -1795,123 +1795,14 @@ static void create_ui(void) {
     lv_obj_center(lbl_close);
 
     /* Row layout constants */
-    const int row_start_y = 96;
+    const int row_start_y = 94;
     const int row_gap = 72;
     const int textarea_height = 44;
-
-    /*--- Row 1: MQTT Address + connection indicator ---*/
-    const int mqtt_row_y = row_start_y;
-    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_mqtt_key, "MQTT");
-    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
-
-    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
-    lv_textarea_set_text(g_settings_ta_mqtt, "--");
-    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
-    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
-    lv_obj_set_size(g_settings_ta_mqtt, 488, textarea_height);
-    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_TRANSP, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_side(g_settings_ta_mqtt, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
-    lv_obj_clear_state(g_settings_ta_mqtt, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
-    lv_obj_remove_flag(g_settings_ta_mqtt, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
-
-    /* MQTT connection status icon */
-    g_settings_mqtt_status = lv_label_create(g_settings_modal);
-    lv_label_set_text(g_settings_mqtt_status, FA_ICON_NETWORK);
-    lv_obj_set_style_text_font(g_settings_mqtt_status, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_set_style_text_color(g_settings_mqtt_status, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_settings_mqtt_status, 0, LV_PART_MAIN);
-    lv_obj_align_to(g_settings_mqtt_status, g_settings_ta_mqtt, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
-
-    /*--- Row 2: MQTT User + Password ---*/
-    const int creds_row_y = mqtt_row_y + row_gap;
-
-    lv_obj_t *lbl_user_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_user_key, "User");
-    lv_obj_set_style_text_color(lbl_user_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_user_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_user_key, LV_ALIGN_TOP_LEFT, 20, creds_row_y);
-
-    g_settings_ta_mqtt_user = lv_textarea_create(g_settings_modal);
-    lv_textarea_set_text(g_settings_ta_mqtt_user, "--");
-    lv_textarea_set_one_line(g_settings_ta_mqtt_user, true);
-    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_user, "username");
-    lv_obj_set_size(g_settings_ta_mqtt_user, 240, textarea_height);
-    lv_obj_set_style_text_color(g_settings_ta_mqtt_user, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_ta_mqtt_user, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_TRANSP, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_side(g_settings_ta_mqtt_user, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
-    lv_obj_clear_state(g_settings_ta_mqtt_user, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
-    lv_obj_remove_flag(g_settings_ta_mqtt_user, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    lv_obj_align_to(g_settings_ta_mqtt_user, lbl_user_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
-
-    lv_obj_t *lbl_pswd_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_pswd_key, "Pswd");
-    lv_obj_set_style_text_color(lbl_pswd_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_pswd_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 368, creds_row_y);
-
-    g_settings_ta_mqtt_pswd = lv_textarea_create(g_settings_modal);
-    lv_textarea_set_text(g_settings_ta_mqtt_pswd, "--");
-    lv_textarea_set_one_line(g_settings_ta_mqtt_pswd, true);
-    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_pswd, "password");
-    lv_textarea_set_password_mode(g_settings_ta_mqtt_pswd, true);
-    lv_obj_set_size(g_settings_ta_mqtt_pswd, 220, textarea_height);
-    lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_ta_mqtt_pswd, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_TRANSP, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
-    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_side(g_settings_ta_mqtt_pswd, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
-    lv_obj_clear_state(g_settings_ta_mqtt_pswd, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
-    lv_obj_remove_flag(g_settings_ta_mqtt_pswd, LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    lv_obj_align_to(g_settings_ta_mqtt_pswd, lbl_pswd_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
-
-    /*--- Row 3: Color Theme buttons ---*/
-    const int theme_row_y = creds_row_y + row_gap - 16;
     const int theme_btn_size = 76;
     const int theme_btn_gap = 16;
+
+    /*--- Row 1: Color Theme buttons ---*/
+    const int theme_row_y = row_start_y - 2;
 
     /* "Theme:" label */
     lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
@@ -1980,8 +1871,117 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
     lv_obj_center(lbl_light);
 
+    /*--- Row 2: MQTT Address + connection indicator ---*/
+    const int mqtt_row_y = theme_row_y + theme_btn_size + row_gap - 52 + 6;
+    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mqtt_key, "MQTT");
+    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
+
+    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
+    lv_obj_set_size(g_settings_ta_mqtt, 488, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    /* MQTT connection status icon */
+    g_settings_mqtt_status = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_settings_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_mqtt_status, g_settings_ta_mqtt, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /*--- Row 3: MQTT User + Password ---*/
+    const int creds_row_y = mqtt_row_y + row_gap;
+
+    lv_obj_t *lbl_user_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_user_key, "User");
+    lv_obj_set_style_text_color(lbl_user_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_user_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_user_key, LV_ALIGN_TOP_LEFT, 20, creds_row_y);
+
+    g_settings_ta_mqtt_user = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_user, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_user, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_user, "username");
+    lv_obj_set_size(g_settings_ta_mqtt_user, 240, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_user, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_user, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_user, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_user, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_user, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt_user, lbl_user_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    lv_obj_t *lbl_pswd_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_pswd_key, "Pswd");
+    lv_obj_set_style_text_color(lbl_pswd_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_pswd_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 368, creds_row_y);
+
+    g_settings_ta_mqtt_pswd = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_pswd, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_pswd, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_pswd, "password");
+    lv_textarea_set_password_mode(g_settings_ta_mqtt_pswd, true);
+    lv_obj_set_size(g_settings_ta_mqtt_pswd, 220, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_pswd, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_pswd, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_pswd, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_pswd, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt_pswd, lbl_pswd_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
     /*--- Row 4: MAC and IP labels ---*/
-    const int info_row_y = theme_row_y + theme_btn_size + row_gap - 52;
+    const int info_row_y = creds_row_y + row_gap - 2;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
