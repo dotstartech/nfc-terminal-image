@@ -162,6 +162,9 @@ static bool g_theme_locked = false;  /* Theme locked after leaving landing page 
 #define COLOR_HEADER     THEME_HEADER
 #define COLOR_TEXT       THEME_TEXT
 
+/* Fixed status indicator color - theme-independent */
+#define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32)  /* 0x32CD32 - always same green */
+
 /* App/page state*/
 typedef enum {
     PAGE_LANDING,
@@ -259,7 +262,7 @@ static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
-static atomic_int g_running = 1;
+static volatile sig_atomic_t g_running = 1;
 static atomic_int g_nfc_ready = 0;
 static atomic_int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
 
@@ -394,27 +397,23 @@ static void fb_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_m
     uint16_t *src = (uint16_t *)px_map;
     uint32_t stride = g_finfo.line_length / 2;  /* pixels per line */
 
-    for (int32_t y = area->y1; y <= area->y2; y++) {
-        if (y >= 0 && y < (int32_t)g_vinfo.yres) {
-            uint16_t *dst = g_fb_mem + y * stride + area->x1;
-            int32_t copy_w = w;
-            int32_t start_x = area->x1;
+    /* Pre-compute clipped bounds once instead of per-scanline */
+    int32_t y_start = area->y1 < 0 ? 0 : area->y1;
+    int32_t y_end = area->y2 >= (int32_t)g_vinfo.yres ? (int32_t)g_vinfo.yres - 1 : area->y2;
+    int32_t x_start = area->x1 < 0 ? 0 : area->x1;
+    int32_t x_end = area->x2 >= (int32_t)g_vinfo.xres ? (int32_t)g_vinfo.xres - 1 : area->x2;
+    int32_t copy_w = x_end - x_start + 1;
+    int32_t src_x_offset = x_start - area->x1;  /* pixels to skip in source */
 
-            /* Clip to screen bounds */
-            if (start_x < 0) {
-                copy_w += start_x;
-                src -= start_x;
-                start_x = 0;
-            }
-            if (start_x + copy_w > (int32_t)g_vinfo.xres) {
-                copy_w = g_vinfo.xres - start_x;
-            }
+    if (copy_w > 0) {
+        /* Advance source pointer to first visible row */
+        src += (y_start - area->y1) * w + src_x_offset;
 
-            if (copy_w > 0) {
-                memcpy(dst, src, copy_w * 2);
-            }
+        for (int32_t y = y_start; y <= y_end; y++) {
+            uint16_t *dst = g_fb_mem + y * stride + x_start;
+            memcpy(dst, src, copy_w * 2);
+            src += w;
         }
-        src += w;
     }
 
     lv_display_flush_ready(disp);
@@ -849,12 +848,12 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
         } else if (role->state == ROLE_STATE_SELECTED) {
             /* Selected -> check in */
             role->state = ROLE_STATE_CHECKED_IN;
-            strncpy(role->tag_id, tag_id, sizeof(role->tag_id) - 1);
+            snprintf(role->tag_id, sizeof(role->tag_id), "%s", tag_id);
         }
     }
 
     /* Update last seen tag */
-    strncpy(g_last_tag_id, tag_id, sizeof(g_last_tag_id) - 1);
+    snprintf(g_last_tag_id, sizeof(g_last_tag_id), "%s", tag_id);
 
     pthread_mutex_unlock(&g_ui_mutex);
 
@@ -922,10 +921,10 @@ static void *nfc_thread(void *arg) {
         }
 
         /* Wait with backoff, but check g_running so we can exit promptly */
-        for (int s = 0; s < retry_delay && atomic_load(&g_running); s++) {
+        for (int s = 0; s < retry_delay && g_running; s++) {
             sleep(1);
         }
-        if (!atomic_load(&g_running)) return NULL;
+        if (!g_running) return NULL;
 
         retry_delay = (retry_delay * 2 > max_retry_delay) ? max_retry_delay : retry_delay * 2;
     }
@@ -943,7 +942,7 @@ static void *nfc_thread(void *arg) {
     atomic_store(&g_ui_needs_refresh, 1);
 
     /* Keep thread alive while polling */
-    while (atomic_load(&g_running)) {
+    while (g_running) {
         sleep(1);
     }
 
@@ -1034,16 +1033,19 @@ static void apply_theme(void) {
         lv_obj_set_style_text_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
     }
     if (g_settings_ta_mqtt_user) {
         lv_obj_set_style_text_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
     }
     if (g_settings_ta_mqtt_pswd) {
         lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
     }
     if (g_settings_mqtt_status) {
         lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
@@ -1383,7 +1385,7 @@ static int check_mqtt_settings_changed(void) {
             int connected = g_mqtt_connected;
             pthread_mutex_unlock(&g_mqtt_mutex);
             lv_obj_set_style_text_color(g_settings_mqtt_status,
-                connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
             lv_obj_invalidate(g_settings_mqtt_status);
         }
     }
@@ -1419,7 +1421,7 @@ static void update_settings_info(void) {
         int connected = g_mqtt_connected;
         pthread_mutex_unlock(&g_mqtt_mutex);
         lv_obj_set_style_text_color(g_settings_mqtt_status,
-            connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+            connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
     }
 }
 
@@ -1440,6 +1442,11 @@ static void settings_close_btn_cb(lv_event_t *e) {
     LOG("UI: Settings modal closed\n");
     if (g_settings_keyboard) {
         lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* Clear cursor from any active textarea */
+    if (g_active_textarea) {
+        lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        g_active_textarea = NULL;
     }
     if (g_settings_modal) {
         lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
@@ -1483,8 +1490,14 @@ static void mqtt_ta_click_cb(lv_event_t *e) {
     lv_obj_t *ta = lv_event_get_target(e);
     LOG("UI: MQTT textarea clicked\n");
     if (g_settings_keyboard) {
+        /* Clear focus from previous textarea */
+        if (g_active_textarea && g_active_textarea != ta) {
+            lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        }
         g_active_textarea = ta;
         lv_keyboard_set_textarea(g_settings_keyboard, ta);
+        /* Set focused state so LVGL shows the cursor */
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);
         lv_obj_remove_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(g_settings_keyboard);
         lv_obj_invalidate(g_settings_keyboard);
@@ -1508,6 +1521,11 @@ static void settings_modal_click_cb(lv_event_t *e) {
         }
         if (!on_input) {
             lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+            /* Clear cursor from textarea by removing focus */
+            if (g_active_textarea) {
+                lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+                g_active_textarea = NULL;
+            }
             lv_obj_invalidate(lv_screen_active());
         } else {
             return;  /* Click was on textarea/keyboard, nothing to do */
@@ -1802,6 +1820,14 @@ static void create_ui(void) {
     lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
     lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
@@ -1838,6 +1864,14 @@ static void create_ui(void) {
     lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
     lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_user, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_user, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_user, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_align_to(g_settings_ta_mqtt_user, lbl_user_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
@@ -1862,6 +1896,14 @@ static void create_ui(void) {
     lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
     lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_pswd, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_pswd, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_pswd, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_align_to(g_settings_ta_mqtt_pswd, lbl_pswd_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
@@ -2114,15 +2156,21 @@ static int mqtt_init(void) {
 
     LOG("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
 
+    /* Generate unique client ID by appending random 8-digit suffix */
+    char client_id[64];
+    srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
+    snprintf(client_id, sizeof(client_id), "%s-%08X", MQTT_CLIENT_ID,
+             (unsigned int)(rand() & 0xFFFFFFFF));
+
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
-    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_address, MQTT_CLIENT_ID,
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_address, client_id,
                           MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
         LOG("MQTT: Failed to create client, rc=%d\n", rc);
         return -1;
     }
-    LOG("MQTT: Created async client for %s (MQTT v5.0)\n", g_mqtt_address);
+    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0)\n", g_mqtt_address, client_id);
 
     /* Set connected callback - called on connect AND auto-reconnect */
     LOG("MQTT: Setting connected callback...\n");
@@ -2331,8 +2379,7 @@ static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
 
     int next_head = (g_mqtt_queue_head + 1) % MQTT_QUEUE_SIZE;
     if (next_head != g_mqtt_queue_tail) {
-        strncpy(g_mqtt_queue[g_mqtt_queue_head].tag_id, tag_id, sizeof(g_mqtt_queue[0].tag_id) - 1);
-        g_mqtt_queue[g_mqtt_queue_head].tag_id[sizeof(g_mqtt_queue[0].tag_id) - 1] = '\0';
+        snprintf(g_mqtt_queue[g_mqtt_queue_head].tag_id, sizeof(g_mqtt_queue[0].tag_id), "%s", tag_id);
         g_mqtt_queue[g_mqtt_queue_head].protocol = protocol;
         g_mqtt_queue_head = next_head;
     } else {
@@ -2366,7 +2413,7 @@ static void mqtt_process_queue(void) {
  *====================*/
 static void signal_handler(int sig) {
     (void)sig;
-    atomic_store(&g_running, 0);
+    g_running = 0;
 }
 
 /*====================
@@ -2485,7 +2532,7 @@ int main(int argc, char *argv[]) {
     /* Main loop */
     int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
     int last_nfc_ready = -1;       /* Track NFC status changes for UI */
-    while (atomic_load(&g_running)) {
+    while (g_running) {
         /* Process MQTT queue from main thread */
         mqtt_process_queue();
 
@@ -2498,12 +2545,12 @@ int main(int argc, char *argv[]) {
                 last_mqtt_connected = connected;
                 if (g_settings_mqtt_status) {
                     lv_obj_set_style_text_color(g_settings_mqtt_status,
-                        connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                        connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_settings_mqtt_status);
                 }
                 if (g_header_mqtt_status) {
                     lv_obj_set_style_text_color(g_header_mqtt_status,
-                        connected ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                        connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_header_mqtt_status);
                 }
             }
@@ -2516,7 +2563,7 @@ int main(int argc, char *argv[]) {
                 last_nfc_ready = nfc_ready;
                 if (g_header_nfc_status) {
                     lv_obj_set_style_text_color(g_header_nfc_status,
-                        nfc_ready ? THEME_BTN_CHECKED : COLOR_GREY, LV_PART_MAIN);
+                        nfc_ready ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_header_nfc_status);
                 }
             }
@@ -2535,14 +2582,9 @@ int main(int argc, char *argv[]) {
             LOG("UI: Refreshed from main loop\n");
         }
         
-        /* Explicitly poll touch input */
-        if (g_touch_indev) {
-            lv_indev_read(g_touch_indev);
-        }
-        
-        lv_timer_handler();
+        uint32_t next_ms = lv_timer_handler();
         pthread_mutex_unlock(&g_ui_mutex);
-        usleep(10000);  /* 10ms - ~100 FPS */
+        usleep((next_ms > 1 ? next_ms : 1) * 1000);
     }
 
     /* Cleanup */
