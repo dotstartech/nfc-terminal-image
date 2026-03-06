@@ -354,7 +354,9 @@ static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>
 #define MQTT_QUEUE_SIZE 8
 typedef struct {
     char tag_id[64];
-    uint8_t protocol;  /* NFC protocol type: T1T, T2T, T3T, etc. */
+    uint8_t protocol;    /* NFC protocol type: T1T, T2T, T3T, etc. */
+    uint8_t page;        /* Which app page queued this event */
+    bool checked_in;     /* Check-in state (only used for PAGE_SIMPLE_CHECKIN) */
 } mqtt_queue_entry_t;
 static mqtt_queue_entry_t g_mqtt_queue[MQTT_QUEUE_SIZE];
 static volatile int g_mqtt_queue_head = 0;
@@ -887,8 +889,6 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
             entry->checked_in = !entry->checked_in;
             LOG("NFC: Check-in map: tag=%s -> %s\n", tag_id,
                 entry->checked_in ? "checked-in" : "checked-out");
-            /* Publish state change via MQTT */
-            mqtt_publish_checkin_state(tag_id, entry->checked_in);
         } else {
             LOG("NFC: Check-in map full, cannot track tag %s\n", tag_id);
         }
@@ -915,7 +915,7 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
 
     pthread_mutex_unlock(&g_ui_mutex);
 
-    /* Queue tag event for MQTT publish from main thread */
+    /* Queue MQTT publish for main thread */
     mqtt_queue_tag(tag_id, protocol);
 
     /* Signal main loop to refresh UI */
@@ -2705,8 +2705,17 @@ static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
 
     int next_head = (g_mqtt_queue_head + 1) % MQTT_QUEUE_SIZE;
     if (next_head != g_mqtt_queue_tail) {
-        snprintf(g_mqtt_queue[g_mqtt_queue_head].tag_id, sizeof(g_mqtt_queue[0].tag_id), "%s", tag_id);
-        g_mqtt_queue[g_mqtt_queue_head].protocol = protocol;
+        mqtt_queue_entry_t *entry = &g_mqtt_queue[g_mqtt_queue_head];
+        snprintf(entry->tag_id, sizeof(entry->tag_id), "%s", tag_id);
+        entry->protocol = protocol;
+        entry->page = g_current_page;
+        /* For check-in mode, look up the current state */
+        if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+            checkin_entry_t *ce = checkin_map_get_or_create(tag_id);
+            entry->checked_in = ce ? ce->checked_in : false;
+        } else {
+            entry->checked_in = false;
+        }
         g_mqtt_queue_head = next_head;
     } else {
         LOG("MQTT: Queue full, dropping message\n");
@@ -2718,19 +2727,28 @@ static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
 static void mqtt_process_queue(void) {
     char tag_id[64];
     uint8_t protocol;
+    uint8_t page;
+    bool checked_in;
     while (1) {
         pthread_mutex_lock(&g_mqtt_queue_mutex);
         if (g_mqtt_queue_head == g_mqtt_queue_tail) {
             pthread_mutex_unlock(&g_mqtt_queue_mutex);
             break;
         }
-        strncpy(tag_id, g_mqtt_queue[g_mqtt_queue_tail].tag_id, sizeof(tag_id) - 1);
+        mqtt_queue_entry_t *e = &g_mqtt_queue[g_mqtt_queue_tail];
+        strncpy(tag_id, e->tag_id, sizeof(tag_id) - 1);
         tag_id[sizeof(tag_id) - 1] = '\0';
-        protocol = g_mqtt_queue[g_mqtt_queue_tail].protocol;
+        protocol = e->protocol;
+        page = e->page;
+        checked_in = e->checked_in;
         g_mqtt_queue_tail = (g_mqtt_queue_tail + 1) % MQTT_QUEUE_SIZE;
         pthread_mutex_unlock(&g_mqtt_queue_mutex);
-        
-        mqtt_publish_tag_event(tag_id, protocol);
+
+        if (page == PAGE_SIMPLE_CHECKIN) {
+            mqtt_publish_checkin_state(tag_id, checked_in);
+        } else {
+            mqtt_publish_tag_event(tag_id, protocol);
+        }
     }
 }
 
