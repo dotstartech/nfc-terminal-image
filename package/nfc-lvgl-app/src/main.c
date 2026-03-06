@@ -1305,7 +1305,7 @@ static void checkin_start_pulse(void) {
     if (!g_checkin_nfc_icon) return;
     lv_anim_init(&g_checkin_pulse_anim);
     lv_anim_set_var(&g_checkin_pulse_anim, g_checkin_nfc_icon);
-    lv_anim_set_values(&g_checkin_pulse_anim, LV_OPA_40, LV_OPA_COVER);
+    lv_anim_set_values(&g_checkin_pulse_anim, 89, LV_OPA_COVER); /* 35% to 100% */
     lv_anim_set_exec_cb(&g_checkin_pulse_anim, anim_opa_cb);
     lv_anim_set_duration(&g_checkin_pulse_anim, 1285);
     lv_anim_set_playback_duration(&g_checkin_pulse_anim, 1285);

@@ -15,6 +15,11 @@
 #define LV_COLOR_DEPTH 16
 
 /*====================
+   DISPLAY SETTINGS
+ *====================*/
+#define LV_DEF_REFR_PERIOD 16  /* ~60 FPS */
+
+/*====================
    MEMORY SETTINGS
  *====================*/
 #define LV_MEM_CUSTOM 0
