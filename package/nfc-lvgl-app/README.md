@@ -10,7 +10,7 @@ A touch-screen NFC terminal application built with LVGL v9.2.2. Both the product
 - **EV Charging** *(placeholder)*
 - **Settings Modal**: Theme selection, device info (IP, MAC, MQTT status)
 - **Theme System**: High Contrast, Catppuccin Mocha (dark), Catppuccin Latte (light)
-- **Header Status Indicators**: NFC (U+F519) and MQTT (U+F6FF) icons show connection state in real time
+- **Header Status Indicators**: NFC (U+E531, FA Brands) and MQTT (U+F6FF) icons show connection state in real time
 
 ## Build Types
 
@@ -124,12 +124,19 @@ Press **Ctrl+C** or close the window to exit.
 
 ```
 src/
-├── main.c                    # Main application (~2550 lines)
+├── main.c                    # Main application
 ├── lv_conf.h                 # LVGL configuration
 ├── Makefile.desktop          # Desktop build makefile
 ├── fonts/
-│   ├── fa_solid_48.c         # Font Awesome 48px (8 glyphs)
-│   └── fa-solid-900.otf      # Font Awesome source OTF
+│   ├── fa_solid_48.c         # Font Awesome Solid 48px
+│   ├── fa_regular_48.c       # Font Awesome Regular 48px
+│   ├── fa_brands_nfc_48.c    # Font Awesome Brands NFC 48px (header icon)
+│   ├── fa_brands_nfc_360.c   # Font Awesome Brands NFC 360px (body icon)
+│   ├── lv_font_montserrat_52.c
+│   ├── lv_font_montserrat_56.c
+│   └── *.otf                 # Font Awesome source OTF files
+├── logo_small.c              # Logo image data
+├── logo_mid.c                # Logo image data (mid size)
 ├── lvgl/                     # LVGL library (auto-downloaded for desktop)
 └── desktop_build/            # Desktop build output (gitignored)
 ```
@@ -152,8 +159,8 @@ The header bar shows two Font Awesome status icons:
 
 | Icon | Glyph  | Meaning |
 |------|--------|---------|
-| NFC  | U+F519 | Grey = not ready, Green = NFC initialized |
-| MQTT | U+F6FF | Grey = disconnected, Green = connected |
+| NFC  | U+E531 (FA Brands) | Grey = not ready, Green = NFC initialized |
+| MQTT | U+F6FF (FA Solid)  | Grey = disconnected, Green = connected |
 
 ## Theme Colors
 

@@ -43,10 +43,10 @@ LV_IMAGE_DECLARE(logo_small);
 #define FA_ICON_XMARK          "\xEF\x80\x8D"  /* U+F00D - close X */
 #define FA_ICON_MOON           "\xEF\x86\x86"  /* U+F186 - moon (dark theme) */
 #define FA_ICON_SUN            "\xEF\x86\x85"  /* U+F185 - sun (light theme) */
-#define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast) */
+#define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast theme) */
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
 #define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
-#define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol (FA Brands) */
+#define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol */
 
 #include "linux_nfc_api.h"
 #include "MQTTAsync.h"
@@ -869,14 +869,13 @@ static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
 
     LOG("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
 
-    /* Check MQTT connection - only allow state transitions if connected */
+    /* Check MQTT connection - log state but do not drop tag scans */
     pthread_mutex_lock(&g_mqtt_mutex);
     int mqtt_ok = g_mqtt_connected;
     pthread_mutex_unlock(&g_mqtt_mutex);
 
     if (!mqtt_ok) {
-        LOG("NFC: MQTT not connected, ignoring tag scan\n");
-        return;
+        LOG("NFC: MQTT not connected, queuing tag scan for later publish\n");
     }
 
     /* Lock UI mutex to protect shared state and g_last_tag_id */
@@ -1775,6 +1774,7 @@ static void create_ui(void) {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);  /* Prevent scroll gestures from stealing button clicks */
 
     LOG("UI: Creating landing page...\n");
 
@@ -1812,6 +1812,7 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(g_btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_ext_click_area(g_btn_settings, 10);  /* 10px extra touch area around button */
     
     lv_obj_t *lbl_settings = lv_label_create(g_btn_settings);
     lv_label_set_text(lbl_settings, FA_ICON_BARS);
@@ -2063,7 +2064,7 @@ static void create_ui(void) {
     g_settings_close_btn = lv_button_create(g_settings_modal);
     lv_obj_t *btn_close = g_settings_close_btn;
     lv_obj_set_size(btn_close, 96, 96);
-    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, -2, -2);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, -2, 2);
     lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
@@ -2073,6 +2074,7 @@ static void create_ui(void) {
     lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_ext_click_area(btn_close, 10);  /* 10px extra touch area around button */
     lv_obj_add_event_cb(g_settings_modal, settings_modal_click_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_close = lv_label_create(btn_close);
