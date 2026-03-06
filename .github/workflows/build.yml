@@ -37,7 +37,7 @@ jobs:
 
       - name: Clone Buildroot
         run: |
-          git clone https://github.com/buildroot/buildroot.git --branch 2024.02.x --depth 1
+          git clone https://github.com/buildroot/buildroot.git --branch 2026.02.x --depth 1
 
       - name: Build image
         run: |

@@ -54,7 +54,7 @@ apply_patches() {
 # Check if buildroot exists
 if [ ! -d "${BUILDROOT_DIR}" ]; then
     print_error "Buildroot directory not found. Please clone buildroot first:"
-    echo "  git clone https://github.com/buildroot/buildroot.git --branch 2024.02.x --depth 1"
+    echo "  git clone https://github.com/buildroot/buildroot.git --branch 2026.02.x --depth 1"
     exit 1
 fi
 
