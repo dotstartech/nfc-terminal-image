@@ -1,0 +1,2961 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <signal.h>
+#include <time.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdatomic.h>
+
+#ifdef DESKTOP_BUILD
+#include <SDL2/SDL.h>
+#else
+#include <linux/fb.h>
+#include <linux/input.h>
+#include <sys/mman.h>
+#endif
+
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+
+#include "lvgl/lvgl.h"
+
+/* Font Awesome icon fonts */
+LV_FONT_DECLARE(fa_solid_48);
+LV_FONT_DECLARE(fa_regular_48);
+LV_FONT_DECLARE(fa_brands_nfc_48);
+LV_FONT_DECLARE(fa_brands_nfc_360);
+LV_FONT_DECLARE(lv_font_montserrat_52);
+LV_FONT_DECLARE(lv_font_montserrat_56);
+
+/* Logo image */
+LV_IMAGE_DECLARE(logo_small);
+
+/* Font Awesome Unicode codepoints (UTF-8 encoded) */
+#define FA_ICON_BARS           "\xEF\x83\x89"  /* U+F0C9 - hamburger menu */
+#define FA_ICON_XMARK          "\xEF\x80\x8D"  /* U+F00D - close X */
+#define FA_ICON_MOON           "\xEF\x86\x86"  /* U+F186 - moon (dark theme) */
+#define FA_ICON_SUN            "\xEF\x86\x85"  /* U+F185 - sun (light theme) */
+#define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast theme) */
+#define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
+#define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
+#define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol */
+
+#include "linux_nfc_api.h"
+#include "MQTTAsync.h"
+
+#define DISPLAY_WIDTH   720
+#define DISPLAY_HEIGHT  720
+#define FB_DEVICE       "/dev/fb0"
+#define TOUCH_DEVICE    "/dev/input/event4"
+
+#define MQTT_ADDRESS    "tcp://192.168.188.50:1883"
+#define MQTT_CLIENT_ID  "nfc-terminal"
+#define MQTT_USERNAME   "admin"
+#define MQTT_PASSWORD   "admin"
+#define MQTT_QOS        2
+#define MQTT_TIMEOUT    3000L  /* 3 seconds */
+#define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
+#define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
+
+/* Logging macro - printf with immediate flush */
+#define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
+
+/* Color themes */
+typedef enum {
+    THEME_HIGH_CONTRAST,
+    THEME_DARK_MOCHA,
+    THEME_LIGHT_LATTE
+} color_theme_t;
+
+typedef struct {
+    lv_color_t bg;           /* Background */
+    lv_color_t modal_bg;     /* Modal background (slightly darker) */
+    lv_color_t header;       /* Header background */
+    lv_color_t btn_default;  /* Button default */
+    lv_color_t btn_pressed;  /* Button pressed */
+    lv_color_t btn_selected; /* Button selected (yellow) */
+    lv_color_t btn_checked;  /* Button checked in (green) */
+    lv_color_t text;         /* Primary text */
+    lv_color_t text_secondary; /* Secondary/muted text */
+    lv_color_t btn_text;     /* Button label text */
+    lv_color_t role_unselected_bg;   /* Role button unselected background */
+    lv_color_t role_unselected_text; /* Role button unselected text */
+} theme_colors_t;
+
+/* High Contrast theme */
+static const theme_colors_t g_theme_high_contrast = {
+    .bg           = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e */
+    .modal_bg     = {.red = 0x14, .green = 0x14, .blue = 0x26},  /* Slightly darker */
+    .header       = {.red = 0x12, .green = 0x12, .blue = 0x24},  /* 0x121224 */
+    .btn_default  = {.red = 0x80, .green = 0x80, .blue = 0x80},  /* 0x808080 */
+    .btn_pressed  = {.red = 0xC8, .green = 0xC8, .blue = 0xC8},  /* 0xC8C8C8 */
+    .btn_selected = {.red = 0xFF, .green = 0xD7, .blue = 0x00},  /* 0xFFD700 */
+    .btn_checked  = {.red = 0x32, .green = 0xCD, .blue = 0x32},  /* 0x32CD32 */
+    .text         = {.red = 0xFF, .green = 0xFF, .blue = 0xFF},  /* 0xFFFFFF */
+    .text_secondary = {.red = 0xA0, .green = 0xA0, .blue = 0xA0}, /* 0xA0A0A0 */
+    .btn_text     = {.red = 0x1a, .green = 0x1a, .blue = 0x2e},  /* 0x1a1a2e (dark on button) */
+    .role_unselected_bg   = {.red = 0xC8, .green = 0xC8, .blue = 0xC8},  /* Light grey */
+    .role_unselected_text = {.red = 0x40, .green = 0x40, .blue = 0x40},  /* Dark grey */
+};
+
+/* Catppuccin Mocha (Dark) */
+static const theme_colors_t g_theme_dark_mocha = {
+    .bg           = {.red = 0x1e, .green = 0x1e, .blue = 0x2e},  /* Base: 0x1e1e2e */
+    .modal_bg     = {.red = 0x18, .green = 0x18, .blue = 0x26},  /* Slightly darker */
+    .header       = {.red = 0x18, .green = 0x18, .blue = 0x25},  /* Mantle: 0x181825 */
+    .btn_default  = {.red = 0x31, .green = 0x32, .blue = 0x44},  /* Surface0: 0x313244 */
+    .btn_pressed  = {.red = 0x45, .green = 0x47, .blue = 0x5a},  /* Surface1: 0x45475a */
+    .btn_selected = {.red = 0xf9, .green = 0xe2, .blue = 0xaf},  /* Yellow: 0xf9e2af */
+    .btn_checked  = {.red = 0xa6, .green = 0xe3, .blue = 0xa1},  /* Green: 0xa6e3a1 */
+    .text         = {.red = 0xcd, .green = 0xd6, .blue = 0xf4},  /* Text: 0xcdd6f4 */
+    .text_secondary = {.red = 0x6c, .green = 0x70, .blue = 0x86}, /* Overlay0: 0x6c7086 */
+    .btn_text     = {.red = 0xcd, .green = 0xd6, .blue = 0xf4},  /* Text: light on dark button */
+    .role_unselected_bg   = {.red = 0x93, .green = 0x9d, .blue = 0xb4},  /* Overlay2: lighter */
+    .role_unselected_text = {.red = 0x1e, .green = 0x1e, .blue = 0x2e},  /* Base: dark */
+};
+
+/* Catppuccin Latte (Light) */
+static const theme_colors_t g_theme_light_latte = {
+    .bg           = {.red = 0xef, .green = 0xf1, .blue = 0xf5},  /* Base: 0xeff1f5 */
+    .modal_bg     = {.red = 0xe0, .green = 0xe3, .blue = 0xea},  /* Slightly darker */
+    .header       = {.red = 0xe6, .green = 0xe9, .blue = 0xef},  /* Mantle: 0xe6e9ef */
+    .btn_default  = {.red = 0xac, .green = 0xb0, .blue = 0xbe},  /* Surface2: darker */
+    .btn_pressed  = {.red = 0x9c, .green = 0xa0, .blue = 0xb0},  /* Overlay0: darker */
+    .btn_selected = {.red = 0xdf, .green = 0x8e, .blue = 0x1d},  /* Yellow: 0xdf8e1d */
+    .btn_checked  = {.red = 0x40, .green = 0xa0, .blue = 0x2b},  /* Green: 0x40a02b */
+    .text         = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text: 0x4c4f69 */
+    .text_secondary = {.red = 0x7c, .green = 0x7f, .blue = 0x93}, /* Subtext0: darker */
+    .btn_text     = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text (dark on button) */
+    .role_unselected_bg   = {.red = 0xbc, .green = 0xc0, .blue = 0xcc},  /* Surface1: darker */
+    .role_unselected_text = {.red = 0x4c, .green = 0x4f, .blue = 0x69},  /* Text: darker */
+};
+
+static color_theme_t g_current_theme = THEME_HIGH_CONTRAST;
+static const theme_colors_t *g_theme = &g_theme_high_contrast;
+static bool g_theme_locked = false;  /* Theme locked after leaving landing page */
+
+/* Convenience macros to access current theme colors */
+#define THEME_BG           (g_theme->bg)
+#define THEME_MODAL_BG     (g_theme->modal_bg)
+#define THEME_HEADER       (g_theme->header)
+#define THEME_BTN_DEFAULT  (g_theme->btn_default)
+#define THEME_BTN_PRESSED  (g_theme->btn_pressed)
+#define THEME_BTN_SELECTED (g_theme->btn_selected)
+#define THEME_BTN_CHECKED  (g_theme->btn_checked)
+#define THEME_TEXT         (g_theme->text)
+#define THEME_TEXT_SECONDARY (g_theme->text_secondary)
+#define THEME_BTN_TEXT     (g_theme->btn_text)
+#define THEME_ROLE_UNSELECTED_BG   (g_theme->role_unselected_bg)
+#define THEME_ROLE_UNSELECTED_TEXT (g_theme->role_unselected_text)
+
+/* Backward-compatible color macros using theme */
+#define COLOR_GREY       THEME_BTN_DEFAULT
+#define COLOR_LIGHT_GREY THEME_TEXT_SECONDARY
+#define COLOR_PRESSED    THEME_BTN_PRESSED
+#define COLOR_YELLOW     THEME_BTN_SELECTED
+#define COLOR_CHECKED    THEME_BTN_CHECKED
+#define COLOR_BG         THEME_BG
+#define COLOR_HEADER     THEME_HEADER
+#define COLOR_TEXT       THEME_TEXT
+
+/* Fixed status indicator color - theme-independent */
+#define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32)  /* 0x32CD32 - always same green */
+
+/* App/page state*/
+typedef enum {
+    PAGE_LANDING,
+    PAGE_SIMPLE_CHECKIN,
+    PAGE_ROLES_BOOKING,
+    PAGE_EV_CHARGING
+} app_page_t;
+
+static app_page_t g_current_page = PAGE_LANDING;
+
+/*====================
+   ROLE STATE MACHINE
+ *====================*/
+typedef enum {
+    ROLE_STATE_UNSELECTED,    /* Grey button, not active */
+    ROLE_STATE_SELECTED,      /* Yellow button, waiting for check-in */
+    ROLE_STATE_CHECKED_IN     /* Green button, checked in with tag */
+} role_state_t;
+
+typedef struct {
+    role_state_t state;
+    char tag_id[64];          /* Tag ID that checked in */
+    lv_obj_t *btn;
+    lv_obj_t *label;
+} role_t;
+
+/*====================
+   CHECK-IN/OUT STATE MAP
+ *====================*/
+#define CHECKIN_MAP_SIZE 64
+typedef struct {
+    char tag_id[64];
+    bool checked_in;
+    bool used;
+} checkin_entry_t;
+static checkin_entry_t g_checkin_map[CHECKIN_MAP_SIZE] = {0};
+
+/* Look up or create entry for a tag. Returns pointer to entry, or NULL if map full. */
+static checkin_entry_t *checkin_map_get_or_create(const char *tag_id) {
+    int first_free = -1;
+    for (int i = 0; i < CHECKIN_MAP_SIZE; i++) {
+        if (g_checkin_map[i].used && strcmp(g_checkin_map[i].tag_id, tag_id) == 0) {
+            return &g_checkin_map[i];
+        }
+        if (!g_checkin_map[i].used && first_free < 0) {
+            first_free = i;
+        }
+    }
+    if (first_free < 0) return NULL;  /* Map full */
+    checkin_entry_t *e = &g_checkin_map[first_free];
+    snprintf(e->tag_id, sizeof(e->tag_id), "%s", tag_id);
+    e->checked_in = false;  /* Will be toggled to true on first scan */
+    e->used = true;
+    return e;
+}
+
+/*====================
+   GLOBAL STATE
+ *====================*/
+#define NUM_ROLES 8
+static const char *g_role_names[NUM_ROLES] = {"Role A", "Role B", "Role C", "Role D", "Role E", "Role F", "Role G", "Role H"};
+static role_t g_roles[NUM_ROLES] = {0};
+static lv_obj_t *g_status_label = NULL;
+static lv_obj_t *g_header = NULL;
+
+/* Landing page UI */
+static lv_obj_t *g_landing_container = NULL;
+static lv_obj_t *g_landing_title = NULL;
+static lv_obj_t *g_btn_simple_checkin = NULL;
+static lv_obj_t *g_btn_roles_booking = NULL;
+static lv_obj_t *g_btn_ev_charging = NULL;
+static lv_obj_t *g_btn_settings = NULL;  /* Settings/hamburger button */
+static lv_obj_t *g_btn_theme_contrast = NULL;
+static lv_obj_t *g_btn_theme_dark = NULL;
+static lv_obj_t *g_btn_theme_light = NULL;
+
+/* Settings modal */
+static lv_obj_t *g_settings_modal = NULL;
+static lv_obj_t *g_settings_close_btn = NULL;
+static lv_obj_t *g_settings_title = NULL;
+static lv_obj_t *g_settings_val_mac = NULL;
+static lv_obj_t *g_settings_val_ip = NULL;
+static lv_obj_t *g_settings_ta_mqtt = NULL;  /* Textarea for MQTT address */
+static lv_obj_t *g_settings_ta_mqtt_user = NULL;  /* Textarea for MQTT username */
+static lv_obj_t *g_settings_ta_mqtt_pswd = NULL;  /* Textarea for MQTT password */
+static lv_obj_t *g_settings_mqtt_status = NULL; /* MQTT connection status icon */
+static lv_obj_t *g_settings_keyboard = NULL; /* Virtual keyboard */
+static lv_obj_t *g_active_textarea = NULL; /* Currently focused textarea */
+
+/* Custom keyboard maps for MQTT input (lowercase) */
+static const char * const mqtt_kb_map_lc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "ABC", "a", "s", "d", "f", "g", "h", "j", "k", "l", "\n",
+    "z", "x", "c", "v", "b", "n", "m", ".", ":", "/", LV_SYMBOL_NEW_LINE, ""
+};
+
+static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_lc_map[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6
+};
+
+/* Custom keyboard maps for MQTT input (uppercase) */
+static const char * const mqtt_kb_map_uc[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "abc", "A", "S", "D", "F", "G", "H", "J", "K", "L", "\n",
+    "Z", "X", "C", "V", "B", "N", "M", ".", ":", "/", LV_SYMBOL_NEW_LINE, ""
+};
+
+static const lv_buttonmatrix_ctrl_t mqtt_kb_ctrl_uc_map[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    LV_KEYBOARD_CTRL_BUTTON_FLAGS | 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 4, LV_BUTTONMATRIX_CTRL_CHECKED | 6
+};
+
+/* Check-in/Check-out app */
+static lv_obj_t *g_checkin_container = NULL;
+static lv_obj_t *g_checkin_lbl_tag = NULL;
+static lv_obj_t *g_checkin_lbl_state = NULL;
+static lv_obj_t *g_checkin_lbl_time = NULL;
+static lv_timer_t *g_checkin_hide_timer = NULL;  /* Timer to auto-hide after 3 seconds */
+static lv_obj_t *g_checkin_nfc_icon = NULL;       /* NFC symbol displayed while waiting */
+static lv_anim_t g_checkin_pulse_anim;             /* Pulsing animation for NFC icon */
+
+/* Roles booking app */
+static lv_obj_t *g_roles_container = NULL;
+static lv_obj_t *g_btn_back = NULL;
+static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in header */
+static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
+
+static char g_last_tag_id[64] = "";
+static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
+static volatile sig_atomic_t g_running = 1;
+static atomic_int g_nfc_ready = 0;
+static atomic_int g_ui_needs_refresh = 0;  /* Flag for main loop to refresh UI */
+
+#ifdef DESKTOP_BUILD
+/* SDL display */
+static SDL_Window *g_sdl_window = NULL;
+static SDL_Renderer *g_sdl_renderer = NULL;
+static SDL_Texture *g_sdl_texture = NULL;
+static lv_display_t *g_display = NULL;
+
+/* SDL mouse input */
+static lv_indev_t *g_touch_indev = NULL;
+static int g_mouse_x = 0;
+static int g_mouse_y = 0;
+static int g_mouse_pressed = 0;
+#else
+/* Framebuffer */
+static int g_fb_fd = -1;
+static uint16_t *g_fb_mem = NULL;  /* RGB565 framebuffer memory */
+static struct fb_var_screeninfo g_vinfo;
+static struct fb_fix_screeninfo g_finfo;
+static lv_display_t *g_display = NULL;
+
+/* Touch input */
+static int g_touch_fd = -1;
+static lv_indev_t *g_touch_indev = NULL;
+static int g_touch_x = 0;
+static int g_touch_y = 0;
+static int g_touch_pressed = 0;
+#endif
+
+/* MQTT Client (Async) */
+static MQTTAsync g_mqtt_client = NULL;
+static volatile int g_mqtt_connected = 0;
+static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
+static char g_mqtt_address[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
+static char g_mqtt_username[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
+static char g_mqtt_password[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
+
+static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
+static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
+
+/* MQTT Message Queue - simple ring buffer for tag events to publish */
+#define MQTT_QUEUE_SIZE 8
+typedef struct {
+    char tag_id[64];
+    uint8_t protocol;    /* NFC protocol type: T1T, T2T, T3T, etc. */
+    uint8_t page;        /* Which app page queued this event */
+    bool checked_in;     /* Check-in state (only used for PAGE_SIMPLE_CHECKIN) */
+} mqtt_queue_entry_t;
+static mqtt_queue_entry_t g_mqtt_queue[MQTT_QUEUE_SIZE];
+static volatile int g_mqtt_queue_head = 0;
+static volatile int g_mqtt_queue_tail = 0;
+static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Forward declarations */
+static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
+static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in);
+static void mqtt_queue_tag(const char *tag_id, uint8_t protocol);
+static const char* protocol_to_string(uint8_t protocol);
+static void mqtt_publish_state(const char *state);
+static int mqtt_init(void);
+static void mqtt_deinit(void);
+static void mqtt_reconnect(void);
+
+/* MQTT Async Callbacks (MQTT v5.0) */
+static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response);
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response);
+static void mqtt_on_connected(void *context, char *cause);
+
+/*====================
+   TICK FUNCTION
+ *====================*/
+static uint32_t g_tick_start = 0;
+
+uint32_t custom_tick_get(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t tick = (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+    if (g_tick_start == 0) g_tick_start = tick;
+    return tick - g_tick_start;
+}
+
+/*====================
+   CONSOLE CONTROL
+ *====================*/
+#ifndef DESKTOP_BUILD
+static void clear_console(void) {
+    /* Clear the console and hide cursor */
+    printf("\033[2J");      /* Clear screen */
+    printf("\033[H");       /* Move cursor to home */
+    printf("\033[?25l");    /* Hide cursor */
+    fflush(stdout);
+    fflush(stderr);
+    
+    /* Redirect stdout/stderr to log file for debugging */
+    FILE *f = freopen("/tmp/nfc-lvgl-app.log", "w", stdout);
+    if (!f) {
+        /* Try to create a direct debug log */
+        FILE *dbg = fopen("/tmp/freopen-failed.log", "w");
+        if (dbg) { fprintf(dbg, "freopen stdout failed\n"); fclose(dbg); }
+    }
+    if (!freopen("/tmp/nfc-lvgl-app.log", "a", stderr)) {
+        /* Ignore - stderr redirect is optional */
+    }
+}
+
+static void restore_console(void) {
+    printf("\033[?25h");    /* Show cursor */
+    fflush(stdout);
+}
+
+/* Framebuffer display*/
+static int g_flush_count = 0;
+
+static void fb_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    g_flush_count++;
+    
+    /* Log every 100th flush or if area includes status label region (y < 300) */
+    /*
+    if (g_flush_count % 100 == 0 || (area->y1 < 300 && area->y2 > 150)) {
+        LOG("FB: flush #%d area=(%d,%d)-(%d,%d)\n", 
+               g_flush_count, area->x1, area->y1, area->x2, area->y2);
+    }
+    */
+
+    if (g_fb_mem == NULL) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    int32_t w = area->x2 - area->x1 + 1;
+    uint16_t *src = (uint16_t *)px_map;
+    uint32_t stride = g_finfo.line_length / 2;  /* pixels per line */
+
+    /* Pre-compute clipped bounds once instead of per-scanline */
+    int32_t y_start = area->y1 < 0 ? 0 : area->y1;
+    int32_t y_end = area->y2 >= (int32_t)g_vinfo.yres ? (int32_t)g_vinfo.yres - 1 : area->y2;
+    int32_t x_start = area->x1 < 0 ? 0 : area->x1;
+    int32_t x_end = area->x2 >= (int32_t)g_vinfo.xres ? (int32_t)g_vinfo.xres - 1 : area->x2;
+    int32_t copy_w = x_end - x_start + 1;
+    int32_t src_x_offset = x_start - area->x1;  /* pixels to skip in source */
+
+    if (copy_w > 0) {
+        /* Advance source pointer to first visible row */
+        src += (y_start - area->y1) * w + src_x_offset;
+
+        for (int32_t y = y_start; y <= y_end; y++) {
+            uint16_t *dst = g_fb_mem + y * stride + x_start;
+            memcpy(dst, src, copy_w * 2);
+            src += w;
+        }
+    }
+
+    lv_display_flush_ready(disp);
+}
+
+static int fb_init(void) {
+    g_fb_fd = open(FB_DEVICE, O_RDWR);
+    if (g_fb_fd < 0) {
+        perror("Cannot open framebuffer");
+        return -1;
+    }
+
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &g_vinfo) < 0) {
+        perror("FBIOGET_VSCREENINFO");
+        close(g_fb_fd);
+        return -1;
+    }
+
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &g_finfo) < 0) {
+        perror("FBIOGET_FSCREENINFO");
+        close(g_fb_fd);
+        return -1;
+    }
+
+    if (g_vinfo.bits_per_pixel != 16) {
+        fprintf(stderr, "Unsupported bpp: %d (need 16)\n", g_vinfo.bits_per_pixel);
+        close(g_fb_fd);
+        return -1;
+    }
+
+    size_t fb_size = g_vinfo.yres * g_finfo.line_length;
+    g_fb_mem = mmap(NULL, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fb_mem == MAP_FAILED) {
+        perror("mmap framebuffer");
+        g_fb_mem = NULL;
+        close(g_fb_fd);
+        return -1;
+    }
+
+    /* Clear framebuffer to black */
+    memset(g_fb_mem, 0, fb_size);
+
+    return 0;
+}
+
+static void fb_deinit(void) {
+    if (g_fb_mem && g_fb_mem != MAP_FAILED) {
+        size_t fb_size = g_vinfo.yres * g_finfo.line_length;
+        munmap(g_fb_mem, fb_size);
+        g_fb_mem = NULL;
+    }
+    if (g_fb_fd >= 0) {
+        close(g_fb_fd);
+        g_fb_fd = -1;
+    }
+}
+
+/*====================
+   TOUCH INPUT
+ *====================*/
+/* Touch coordinate ranges (set during init) */
+static int g_touch_x_min = 0, g_touch_x_max = 720;
+static int g_touch_y_min = 0, g_touch_y_max = 720;
+
+static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    struct input_event ev;
+
+    /* Read all pending events */
+    while (g_touch_fd >= 0) {
+        ssize_t n = read(g_touch_fd, &ev, sizeof(ev));
+        
+        if (n < 0) {
+            /* EAGAIN/EWOULDBLOCK means no more events available */
+            break;
+        }
+        if (n != sizeof(ev)) {
+            break;
+        }
+
+        if (ev.type == EV_ABS) {
+            switch (ev.code) {
+                case ABS_X:
+                case ABS_MT_POSITION_X:
+                    g_touch_x = ev.value;
+                    break;
+                case ABS_Y:
+                case ABS_MT_POSITION_Y:
+                    g_touch_y = ev.value;
+                    break;
+                case ABS_MT_TRACKING_ID:
+                    /* MT tracking: >= 0 means touch down, -1 means touch up */
+                    g_touch_pressed = (ev.value >= 0) ? 1 : 0;
+                    break;
+            }
+        } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
+            g_touch_pressed = ev.value;
+        }
+    }
+
+    /* Scale touch coordinates to display */
+    int scaled_x = (g_touch_x - g_touch_x_min) * 720 / (g_touch_x_max - g_touch_x_min + 1);
+    int scaled_y = (g_touch_y - g_touch_y_min) * 720 / (g_touch_y_max - g_touch_y_min + 1);
+    
+    /* Clamp to display bounds */
+    if (scaled_x < 0) scaled_x = 0;
+    if (scaled_x >= 720) scaled_x = 719;
+    if (scaled_y < 0) scaled_y = 0;
+    if (scaled_y >= 720) scaled_y = 719;
+
+    data->point.x = scaled_x;
+    data->point.y = scaled_y;
+    data->state = g_touch_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+static int touch_init(void) {
+    g_touch_fd = open(TOUCH_DEVICE, O_RDONLY | O_NONBLOCK);
+    if (g_touch_fd < 0) {
+        perror("Cannot open touch device");
+        return -1;
+    }
+
+    /* Get touch device info for coordinate scaling */
+    struct input_absinfo abs_x, abs_y;
+    /* Try multitouch coords first, then regular ABS */
+    if (ioctl(g_touch_fd, EVIOCGABS(ABS_MT_POSITION_X), &abs_x) == 0 &&
+        ioctl(g_touch_fd, EVIOCGABS(ABS_MT_POSITION_Y), &abs_y) == 0) {
+        g_touch_x_min = abs_x.minimum;
+        g_touch_x_max = abs_x.maximum;
+        g_touch_y_min = abs_y.minimum;
+        g_touch_y_max = abs_y.maximum;
+        LOG("Touch MT: X=%d-%d, Y=%d-%d\n", 
+               g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
+    } else if (ioctl(g_touch_fd, EVIOCGABS(ABS_X), &abs_x) == 0 &&
+               ioctl(g_touch_fd, EVIOCGABS(ABS_Y), &abs_y) == 0) {
+        g_touch_x_min = abs_x.minimum;
+        g_touch_x_max = abs_x.maximum;
+        g_touch_y_min = abs_y.minimum;
+        g_touch_y_max = abs_y.maximum;
+        LOG("Touch ABS: X=%d-%d, Y=%d-%d\n",
+               g_touch_x_min, g_touch_x_max, g_touch_y_min, g_touch_y_max);
+    }
+
+    LOG("Touch initialized\n");
+    return 0;
+}
+
+static void touch_deinit(void) {
+    if (g_touch_fd >= 0) {
+        close(g_touch_fd);
+        g_touch_fd = -1;
+    }
+}
+
+#else /* DESKTOP_BUILD */
+
+/*====================
+   SDL DISPLAY & INPUT
+ *====================*/
+static int g_flush_count = 0;
+
+static void sdl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    g_flush_count++;
+    
+    if (!g_sdl_texture) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    void *pixels;
+    int pitch;
+    SDL_Rect rect = {
+        .x = area->x1,
+        .y = area->y1,
+        .w = area->x2 - area->x1 + 1,
+        .h = area->y2 - area->y1 + 1
+    };
+    
+    if (SDL_LockTexture(g_sdl_texture, &rect, &pixels, &pitch) == 0) {
+        uint16_t *src = (uint16_t *)px_map;
+        uint8_t *dst = (uint8_t *)pixels;
+        int src_stride = rect.w;
+        
+        for (int y = 0; y < rect.h; y++) {
+            /* Convert RGB565 to ARGB8888 */
+            for (int x = 0; x < rect.w; x++) {
+                uint16_t px = src[x];
+                uint8_t r = ((px >> 11) & 0x1F) * 255 / 31;
+                uint8_t g = ((px >> 5) & 0x3F) * 255 / 63;
+                uint8_t b = (px & 0x1F) * 255 / 31;
+                
+                dst[x * 4 + 0] = b;
+                dst[x * 4 + 1] = g;
+                dst[x * 4 + 2] = r;
+                dst[x * 4 + 3] = 255;
+            }
+            src += src_stride;
+            dst += pitch;
+        }
+        
+        SDL_UnlockTexture(g_sdl_texture);
+    }
+    
+    SDL_RenderCopy(g_sdl_renderer, g_sdl_texture, NULL, NULL);
+    SDL_RenderPresent(g_sdl_renderer);
+    
+    lv_display_flush_ready(disp);
+}
+
+static int sdl_init(void) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return -1;
+    }
+    
+    g_sdl_window = SDL_CreateWindow(
+        "NFC Terminal",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        DISPLAY_WIDTH, DISPLAY_HEIGHT,
+        SDL_WINDOW_SHOWN
+    );
+    
+    if (!g_sdl_window) {
+        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return -1;
+    }
+    
+    g_sdl_renderer = SDL_CreateRenderer(g_sdl_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_sdl_renderer) {
+        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(g_sdl_window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    g_sdl_texture = SDL_CreateTexture(
+        g_sdl_renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        DISPLAY_WIDTH, DISPLAY_HEIGHT
+    );
+    
+    if (!g_sdl_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(g_sdl_renderer);
+        SDL_DestroyWindow(g_sdl_window);
+        SDL_Quit();
+        return -1;
+    }
+    
+    return 0;
+}
+
+static void sdl_deinit(void) {
+    if (g_sdl_texture) {
+        SDL_DestroyTexture(g_sdl_texture);
+        g_sdl_texture = NULL;
+    }
+    if (g_sdl_renderer) {
+        SDL_DestroyRenderer(g_sdl_renderer);
+        g_sdl_renderer = NULL;
+    }
+    if (g_sdl_window) {
+        SDL_DestroyWindow(g_sdl_window);
+        g_sdl_window = NULL;
+    }
+    SDL_Quit();
+}
+
+static void sdl_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_QUIT:
+                g_running = 0;
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    g_mouse_pressed = 1;
+                    g_mouse_x = event.button.x;
+                    g_mouse_y = event.button.y;
+                }
+                break;
+            case SDL_MOUSEBUTTONUP:
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    g_mouse_pressed = 0;
+                }
+                break;
+            case SDL_MOUSEMOTION:
+                g_mouse_x = event.motion.x;
+                g_mouse_y = event.motion.y;
+                break;
+        }
+    }
+    
+    data->point.x = g_mouse_x;
+    data->point.y = g_mouse_y;
+    data->state = g_mouse_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+#endif /* DESKTOP_BUILD */
+
+/*====================
+   UI HELPERS
+ *====================*/
+static void update_button_color(role_t *role) {
+    lv_color_t color;
+
+    switch (role->state) {
+        case ROLE_STATE_SELECTED:
+            color = COLOR_YELLOW;
+            break;
+        case ROLE_STATE_CHECKED_IN:
+            color = COLOR_CHECKED;
+            break;
+        case ROLE_STATE_UNSELECTED:
+        default:
+            color = THEME_ROLE_UNSELECTED_BG;
+            break;
+    }
+
+    lv_obj_set_style_bg_color(role->btn, color, LV_PART_MAIN);
+    lv_obj_invalidate(role->btn);  /* Force redraw of this button */
+}
+
+static void update_status_label(void) {
+    char status[256] = "";
+    const char *tag_str = (g_last_tag_id[0] != '\0') ? g_last_tag_id : "";
+
+    int nfc_ready = atomic_load(&g_nfc_ready);
+    LOG("UI: update_status_label called, g_nfc_ready=%d, tag=%s\n", nfc_ready, tag_str);
+
+    /* Build status string */
+    if (tag_str[0] == '\0') {
+        if (nfc_ready) {
+            snprintf(status, sizeof(status), "Waiting for NFC card...");
+        } else {
+            snprintf(status, sizeof(status), "Initializing NFC...");
+        }
+    } else {
+        snprintf(status, sizeof(status), "Tag: %s", tag_str);
+    }
+
+    lv_label_set_text(g_status_label, status);
+    /* LOG("UI: set label text to: '%s'\n", status); */
+}
+
+/*====================
+   BUTTON CALLBACKS
+ *====================*/
+static void role_btn_event_cb(lv_event_t *e) {
+    role_t *role = (role_t *)lv_event_get_user_data(e);
+
+    /* Note: No mutex needed here - we're called from lv_timer_handler() 
+       which already holds the mutex via the main loop */
+
+    /*
+    LOG("UI: button clicked: state %d -> %d\n", role->state, 
+        (role->state == ROLE_STATE_UNSELECTED) ? ROLE_STATE_SELECTED :
+        (role->state == ROLE_STATE_SELECTED) ? ROLE_STATE_UNSELECTED : role->state);
+    */
+
+    if (role->state == ROLE_STATE_UNSELECTED) {
+        role->state = ROLE_STATE_SELECTED;
+    } else if (role->state == ROLE_STATE_SELECTED) {
+        role->state = ROLE_STATE_UNSELECTED;
+    }
+    /* CHECKED_IN state: button click does nothing (need same tag to check out) */
+
+    update_button_color(role);
+    update_status_label();
+}
+
+/*====================
+   NFC TAG HANDLING
+ *====================*/
+/* Convert NFC protocol value to human-readable string */
+static const char* protocol_to_string(uint8_t protocol) {
+    switch (protocol) {
+        case 0x01: return "T1T";
+        case 0x02: return "T2T";
+        case 0x03: return "T3T";
+        case 0x04: return "ISO-DEP";
+        case 0x06: return "ISO15693";
+        case 0x80: return "MIFARE";
+        default:   return "UNKNOWN";
+    }
+}
+
+static void format_tag_id(nfc_tag_info_t *tag, char *buf, size_t buflen) {
+    size_t pos = 0;
+    for (unsigned int i = 0; i < tag->uid_length && pos < buflen - 3; i++) {
+        pos += snprintf(buf + pos, buflen - pos, "%02X",
+                        (unsigned char)tag->uid[i]);
+        if (i < tag->uid_length - 1 && pos < buflen - 1) {
+            buf[pos++] = ':';
+        }
+    }
+    buf[pos] = '\0';
+}
+
+static void process_tag_discovery(const char *tag_id, uint8_t protocol) {
+    int same_tag = (strcmp(tag_id, g_last_tag_id) == 0);
+
+    LOG("NFC: process_tag_discovery tag=%s, type=%s, same=%d\n", tag_id, protocol_to_string(protocol), same_tag);
+
+    /* Check MQTT connection - log state but do not drop tag scans */
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int mqtt_ok = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+
+    if (!mqtt_ok) {
+        LOG("NFC: MQTT not connected, queuing tag scan for later publish\n");
+    }
+
+    /* Lock UI mutex to protect shared state and g_last_tag_id */
+    pthread_mutex_lock(&g_ui_mutex);
+
+    if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+        /* Check-in/Check-out mode: toggle state in map */
+        checkin_entry_t *entry = checkin_map_get_or_create(tag_id);
+        if (entry) {
+            entry->checked_in = !entry->checked_in;
+            LOG("NFC: Check-in map: tag=%s -> %s\n", tag_id,
+                entry->checked_in ? "checked-in" : "checked-out");
+        } else {
+            LOG("NFC: Check-in map full, cannot track tag %s\n", tag_id);
+        }
+    } else {
+        /* Roles booking mode: process all roles */
+        for (int i = 0; i < NUM_ROLES; i++) {
+            role_t *role = &g_roles[i];
+            if (role->state == ROLE_STATE_CHECKED_IN) {
+                if (same_tag && strcmp(role->tag_id, tag_id) == 0) {
+                    /* Same tag -> check out */
+                    role->state = ROLE_STATE_UNSELECTED;
+                    role->tag_id[0] = '\0';
+                }
+            } else if (role->state == ROLE_STATE_SELECTED) {
+                /* Selected -> check in */
+                role->state = ROLE_STATE_CHECKED_IN;
+                snprintf(role->tag_id, sizeof(role->tag_id), "%s", tag_id);
+            }
+        }
+    }
+
+    /* Update last seen tag */
+    snprintf(g_last_tag_id, sizeof(g_last_tag_id), "%s", tag_id);
+
+    pthread_mutex_unlock(&g_ui_mutex);
+
+    /* Queue MQTT publish for main thread */
+    mqtt_queue_tag(tag_id, protocol);
+
+    /* Signal main loop to refresh UI */
+    atomic_store(&g_ui_needs_refresh, 1);
+}
+
+/*====================
+   NFC CALLBACKS
+ *====================*/
+static void on_tag_arrival(nfc_tag_info_t *tag_info) {
+    LOG("NFC: on_tag_arrival called, tag_info=%p\n", (void*)tag_info);
+    if (!tag_info) return;
+    char tag_id[64];
+    format_tag_id(tag_info, tag_id, sizeof(tag_id));
+    LOG("NFC: Tag detected: %s (uid_len=%u, protocol=0x%02X)\n", tag_id, tag_info->uid_length, tag_info->protocol);
+    process_tag_discovery(tag_id, tag_info->protocol);
+}
+
+static void on_tag_departure(void) {
+    /* Nothing to do on tag removal */
+}
+
+static nfcTagCallback_t g_nfc_callbacks = {
+    .onTagArrival = on_tag_arrival,
+    .onTagDeparture = on_tag_departure
+};
+
+/*====================
+   NFC THREAD
+ *====================*/
+static void *nfc_thread(void *arg) {
+    (void)arg;
+    int res;
+
+    /* Give the UI time to render first frame */
+    sleep(2);
+
+    /* Retry NFC initialization with exponential backoff */
+    int retry_delay = 2;  /* Start with 2 seconds */
+    const int max_retry_delay = 30;  /* Cap at 30 seconds */
+    const int max_retries = 10;
+
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        res = nfcManager_doInitialize();
+        if (res == 0) {
+            LOG("NFC: Initialized NFC (attempt %d)\n", attempt);
+            break;
+        }
+
+        LOG("NFC: Init failed (attempt %d/%d, rc=%d), retrying in %ds...\n",
+            attempt, max_retries, res, retry_delay);
+
+        if (attempt == max_retries) {
+            fprintf(stderr, "NFC init failed after %d attempts\n", max_retries);
+            fflush(stderr);
+            pthread_mutex_lock(&g_ui_mutex);
+            lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
+            pthread_mutex_unlock(&g_ui_mutex);
+            atomic_store(&g_ui_needs_refresh, 1);
+            return NULL;
+        }
+
+        /* Wait with backoff, but check g_running so we can exit promptly */
+        for (int s = 0; s < retry_delay && g_running; s++) {
+            sleep(1);
+        }
+        if (!g_running) return NULL;
+
+        retry_delay = (retry_delay * 2 > max_retry_delay) ? max_retry_delay : retry_delay * 2;
+    }
+
+    /*LOG("NFC: Registering callbacks...\n");*/
+    nfcManager_registerTagCallback(&g_nfc_callbacks);
+    
+    /*LOG("NFC: Enabling discovery (reader_only=0)...\n");*/
+    nfcManager_enableDiscovery(DEFAULT_NFA_TECH_MASK, 0, 0, 0);
+    
+    LOG("NFC: Enabled NFC discovery\n");
+
+    /* Mark NFC as ready - main loop will refresh UI */
+    atomic_store(&g_nfc_ready, 1);
+    atomic_store(&g_ui_needs_refresh, 1);
+
+    /* Keep thread alive while polling */
+    while (g_running) {
+        sleep(1);
+    }
+
+    nfcManager_disableDiscovery();
+    nfcManager_deregisterTagCallback();
+    nfcManager_doDeinitialize();
+
+    return NULL;
+}
+
+/*====================
+   UI SETUP
+ *====================*/
+
+/* Forward declarations for theme functions */
+static void apply_theme(void);
+
+/* Apply current theme colors to all UI elements */
+static void apply_theme(void) {
+    lv_obj_t *scr = lv_screen_active();
+    
+    LOG("UI: Applying theme %d\n", g_current_theme);
+    
+    /* Screen background */
+    lv_obj_set_style_bg_color(scr, THEME_BG, LV_PART_MAIN);
+    
+    /* Landing page */
+    if (g_landing_container) {
+        lv_obj_set_style_bg_color(g_landing_container, THEME_BG, LV_PART_MAIN);
+    }
+    if (g_landing_title) {
+        lv_obj_set_style_text_color(g_landing_title, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_simple_checkin) {
+        lv_obj_set_style_bg_color(g_btn_simple_checkin, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_simple_checkin, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_roles_booking) {
+        lv_obj_set_style_bg_color(g_btn_roles_booking, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_roles_booking, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_ev_charging) {
+        lv_obj_set_style_bg_color(g_btn_ev_charging, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_ev_charging, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_settings) {
+        lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
+        /* Update hamburger icon color - grey for Latte, white for others */
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_settings, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_hex(0x6c7086) : lv_color_white(), LV_PART_MAIN);
+    }
+    if (g_btn_back) {
+        lv_obj_set_style_bg_color(g_btn_back, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    if (g_header_mqtt_status) {
+        lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    }
+    if (g_header_nfc_status) {
+        lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
+    }
+    
+    /* Settings modal */
+    if (g_settings_modal) {
+        lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_modal, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    if (g_settings_close_btn) {
+        lv_obj_set_style_bg_color(g_settings_close_btn, THEME_MODAL_BG, LV_PART_MAIN);
+        /* Update X icon color - grey for Latte, white for others */
+        lv_obj_t *lbl = lv_obj_get_child(g_settings_close_btn, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_hex(0x6c7086) : lv_color_white(), LV_PART_MAIN);
+    }
+    if (g_settings_title) {
+        lv_obj_set_style_text_color(g_settings_title, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_val_mac) {
+        lv_obj_set_style_text_color(g_settings_val_mac, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_val_ip) {
+        lv_obj_set_style_text_color(g_settings_val_ip, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_ta_mqtt) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    }
+    if (g_settings_ta_mqtt_user) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    }
+    if (g_settings_mqtt_status) {
+        lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
+        /* Color is set dynamically based on connection state */
+    }
+    if (g_settings_keyboard) {
+        lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
+        lv_obj_set_style_text_color(g_settings_keyboard, THEME_TEXT, LV_PART_ITEMS);
+    }
+    
+    /* Update theme toggle button styles (not the selected one) */
+    if (g_btn_theme_contrast) {
+        lv_obj_set_style_bg_color(g_btn_theme_contrast, 
+            g_current_theme == THEME_HIGH_CONTRAST ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_HIGH_CONTRAST ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_theme_dark) {
+        lv_obj_set_style_bg_color(g_btn_theme_dark, 
+            g_current_theme == THEME_DARK_MOCHA ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_DARK_MOCHA ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_btn_theme_light) {
+        lv_obj_set_style_bg_color(g_btn_theme_light, 
+            g_current_theme == THEME_LIGHT_LATTE ? COLOR_YELLOW : THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_btn_theme_light, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, 
+            g_current_theme == THEME_LIGHT_LATTE ? lv_color_black() : THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    
+    /* Roles booking page */
+    if (g_header) {
+        lv_obj_set_style_bg_color(g_header, THEME_HEADER, LV_PART_MAIN);
+    }
+    if (g_status_label) {
+        lv_obj_set_style_text_color(g_status_label, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
+    if (g_roles_container) {
+        lv_obj_set_style_bg_color(g_roles_container, THEME_BG, LV_PART_MAIN);
+    }
+    
+    /* Role buttons - only update unselected ones */
+    for (int i = 0; i < NUM_ROLES; i++) {
+        if (g_roles[i].btn) {
+            if (g_roles[i].state == ROLE_STATE_UNSELECTED) {
+                lv_obj_set_style_bg_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+                lv_obj_set_style_border_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+            }
+            if (g_roles[i].label) {
+                lv_obj_set_style_text_color(g_roles[i].label, THEME_ROLE_UNSELECTED_TEXT, LV_PART_MAIN);
+            }
+        }
+    }
+    
+    /* Check-in/Check-out page */
+    if (g_checkin_container) {
+        lv_obj_set_style_bg_color(g_checkin_container, THEME_BG, LV_PART_MAIN);
+    }
+    if (g_checkin_lbl_tag) {
+        lv_obj_set_style_text_color(g_checkin_lbl_tag, THEME_TEXT, LV_PART_MAIN);
+    }
+    /* g_checkin_lbl_state color is set dynamically (green/yellow) - don't override */
+    if (g_checkin_lbl_time) {
+        lv_obj_set_style_text_color(g_checkin_lbl_time, THEME_TEXT, LV_PART_MAIN);
+    }
+    if (g_checkin_nfc_icon) {
+        lv_obj_set_style_text_color(g_checkin_nfc_icon, THEME_BTN_SELECTED, LV_PART_MAIN);
+    }
+
+    lv_obj_invalidate(scr);
+}
+
+/* Helper to update theme button styles */
+static void update_theme_button_styles(void) {
+    if (!g_btn_theme_contrast || !g_btn_theme_dark || !g_btn_theme_light) return;
+    
+    /* Set all buttons to default (not selected) */
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    
+    /* Update label colors for non-selected buttons */
+    lv_obj_t *lbl;
+    lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    lbl = lv_obj_get_child(g_btn_theme_light, 0);
+    if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    
+    /* Highlight the selected button */
+    switch (g_current_theme) {
+        case THEME_HIGH_CONTRAST:
+            lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_contrast, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+        case THEME_DARK_MOCHA:
+            lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_dark, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+        case THEME_LIGHT_LATTE:
+            lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_YELLOW, LV_PART_MAIN);
+            lbl = lv_obj_get_child(g_btn_theme_light, 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+            break;
+    }
+    
+    lv_obj_invalidate(g_btn_theme_contrast);
+    lv_obj_invalidate(g_btn_theme_dark);
+    lv_obj_invalidate(g_btn_theme_light);
+}
+
+/* Theme button callback */
+static void theme_btn_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    
+    if (code != LV_EVENT_CLICKED) {
+        return;
+    }
+    
+    if (g_theme_locked) {
+        LOG("theme_btn_cb: Theme is locked, ignoring change\n");
+        return;
+    }
+    
+    lv_obj_t *btn = lv_event_get_target(e);
+    
+    if (btn == g_btn_theme_contrast) {
+        g_current_theme = THEME_HIGH_CONTRAST;
+        g_theme = &g_theme_high_contrast;
+        LOG("UI: Selected High Contrast\n");
+    } else if (btn == g_btn_theme_dark) {
+        g_current_theme = THEME_DARK_MOCHA;
+        g_theme = &g_theme_dark_mocha;
+        LOG("UI: Selected Dark Mocha\n");
+    } else if (btn == g_btn_theme_light) {
+        g_current_theme = THEME_LIGHT_LATTE;
+        g_theme = &g_theme_light_latte;
+        LOG("UI: Selected Light Latte\n");
+    }
+    
+    update_theme_button_styles();
+    apply_theme();
+}
+
+/* Animation helper: set object opacity (for use as lv_anim_exec_xcb_t) */
+static void anim_opa_cb(void *obj, int32_t value) {
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)value, LV_PART_MAIN);
+}
+
+/* Animation helper: set object scale (for use as lv_anim_exec_xcb_t) */
+static void anim_scale_cb(void *obj, int32_t value) {
+    lv_obj_set_style_transform_scale((lv_obj_t *)obj, value, LV_PART_MAIN);
+}
+
+/* Fade in an LVGL object: unhide, set transparent, animate to opaque */
+static void fade_in_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
+    lv_obj_set_style_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_delay(&a, delay);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+/* Fade out an LVGL object: animate to transparent, then hide */
+static void fade_out_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay);
+static void fade_out_done_cb(lv_anim_t *a) {
+    lv_obj_t *obj = lv_anim_get_user_data(a);
+    if (obj) lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+}
+static void fade_out_obj(lv_obj_t *obj, uint32_t duration, uint32_t delay) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_delay(&a, delay);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_set_user_data(&a, obj);
+    lv_anim_set_completed_cb(&a, fade_out_done_cb);
+    lv_anim_start(&a);
+}
+
+/* Start pulsing animation on the NFC icon (opacity 40% <-> 100%) */
+static void checkin_start_pulse(void) {
+    if (!g_checkin_nfc_icon) return;
+    lv_anim_init(&g_checkin_pulse_anim);
+    lv_anim_set_var(&g_checkin_pulse_anim, g_checkin_nfc_icon);
+    lv_anim_set_values(&g_checkin_pulse_anim, 89, LV_OPA_COVER); /* 35% to 100% */
+    lv_anim_set_exec_cb(&g_checkin_pulse_anim, anim_opa_cb);
+    lv_anim_set_duration(&g_checkin_pulse_anim, 1285);
+    lv_anim_set_playback_duration(&g_checkin_pulse_anim, 1285);
+    lv_anim_set_repeat_count(&g_checkin_pulse_anim, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&g_checkin_pulse_anim, lv_anim_path_ease_in_out);
+    lv_anim_start(&g_checkin_pulse_anim);
+}
+
+/* Stop pulsing and reset NFC icon opacity */
+static void checkin_stop_pulse(void) {
+    if (!g_checkin_nfc_icon) return;
+    lv_anim_delete(g_checkin_nfc_icon, anim_opa_cb);
+}
+
+/* Fade-in callback for NFC icon: restart pulse after it becomes visible */
+static void checkin_nfc_icon_fade_in_done_cb(lv_anim_t *a) {
+    (void)a;
+    checkin_start_pulse();
+}
+
+/* Show NFC icon with fade-in + pulse */
+static void checkin_show_nfc_icon(void) {
+    if (!g_checkin_nfc_icon) return;
+    checkin_stop_pulse();
+    lv_obj_set_style_opa(g_checkin_nfc_icon, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, g_checkin_nfc_icon);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_set_duration(&a, 400);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_completed_cb(&a, checkin_nfc_icon_fade_in_done_cb);
+    lv_anim_start(&a);
+}
+
+/* Timer callback: fade out the check-in info labels after 3 seconds, then show NFC icon again */
+static void checkin_hide_timer_cb(lv_timer_t *timer) {
+    (void)timer;
+    LOG("UI: Check-in display timeout - fading out\n");
+    if (g_checkin_lbl_tag)   fade_out_obj(g_checkin_lbl_tag, 400, 0);
+    if (g_checkin_lbl_state) fade_out_obj(g_checkin_lbl_state, 400, 50);
+    if (g_checkin_lbl_time)  fade_out_obj(g_checkin_lbl_time, 400, 100);
+    /* Show NFC icon again after labels have faded out (500ms delay) */
+    if (g_checkin_nfc_icon) {
+        /* Use a delayed fade-in so it appears after labels disappear */
+        checkin_stop_pulse();
+        lv_obj_set_style_opa(g_checkin_nfc_icon, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_remove_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, g_checkin_nfc_icon);
+        lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+        lv_anim_set_exec_cb(&a, anim_opa_cb);
+        lv_anim_set_duration(&a, 400);
+        lv_anim_set_delay(&a, 500);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_completed_cb(&a, checkin_nfc_icon_fade_in_done_cb);
+        lv_anim_start(&a);
+    }
+    /* Delete timer (one-shot) */
+    if (g_checkin_hide_timer) {
+        lv_timer_delete(g_checkin_hide_timer);
+        g_checkin_hide_timer = NULL;
+    }
+}
+
+/* Show check-in/out result with fade-in + auto-hide after 3 seconds */
+static void checkin_show_result(const char *tag_id, bool checked_in) {
+    /* Format time */
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_str[16];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
+
+    /* Format tag label (truncate long IDs) */
+    char tag_buf[80];
+    snprintf(tag_buf, sizeof(tag_buf), "Tag: %s", tag_id);
+
+    /* Update labels */
+    if (g_checkin_lbl_tag)   lv_label_set_text(g_checkin_lbl_tag, tag_buf);
+    if (g_checkin_lbl_state) {
+        lv_label_set_text(g_checkin_lbl_state, checked_in ? "Checked-in" : "Checked-out");
+        lv_obj_set_style_text_color(g_checkin_lbl_state,
+            THEME_BTN_CHECKED, LV_PART_MAIN);
+    }
+    if (g_checkin_lbl_time)  lv_label_set_text(g_checkin_lbl_time, time_str);
+
+    /* Cancel any existing hide timer */
+    if (g_checkin_hide_timer) {
+        lv_timer_delete(g_checkin_hide_timer);
+        g_checkin_hide_timer = NULL;
+    }
+
+    /* Fade out NFC icon first */
+    if (g_checkin_nfc_icon) {
+        checkin_stop_pulse();
+        fade_out_obj(g_checkin_nfc_icon, 200, 0);
+    }
+
+    /* Fade in all 3 labels (slightly delayed to let icon fade out) */
+    if (g_checkin_lbl_tag)   fade_in_obj(g_checkin_lbl_tag, 300, 200);
+    if (g_checkin_lbl_state) fade_in_obj(g_checkin_lbl_state, 300, 250);
+    if (g_checkin_lbl_time)  fade_in_obj(g_checkin_lbl_time, 300, 300);
+
+    /* Start 3-second timer to auto-hide */
+    g_checkin_hide_timer = lv_timer_create(checkin_hide_timer_cb, 3000, NULL);
+    lv_timer_set_repeat_count(g_checkin_hide_timer, 1);
+
+    LOG("UI: Check-in display: %s -> %s at %s\n", tag_id,
+        checked_in ? "Checked-in" : "Checked-out", time_str);
+}
+
+/* Show/hide pages based on current page */
+static void show_page(app_page_t page) {
+    LOG("UI: Switching to page %d\n", page);
+    
+    /* Lock theme when leaving landing page */
+    if (g_current_page == PAGE_LANDING && page != PAGE_LANDING) {
+        g_theme_locked = true;
+        /* LOG("UI: Theme locked to %d\n", g_current_theme); */
+    }
+    
+    g_current_page = page;
+    
+    /* Hide all pages first */
+    if (g_landing_container) lv_obj_add_flag(g_landing_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_roles_container) lv_obj_add_flag(g_roles_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_checkin_container) lv_obj_add_flag(g_checkin_container, LV_OBJ_FLAG_HIDDEN);
+    if (g_header) lv_obj_add_flag(g_header, LV_OBJ_FLAG_HIDDEN);
+    
+    /* Cancel check-in hide timer and pulse when leaving page */
+    if (page != PAGE_SIMPLE_CHECKIN) {
+        if (g_checkin_hide_timer) {
+            lv_timer_delete(g_checkin_hide_timer);
+            g_checkin_hide_timer = NULL;
+        }
+        checkin_stop_pulse();
+    }
+    
+    /* Show the selected page with fade-in transition */
+    switch (page) {
+        case PAGE_LANDING:
+            LOG("UI: Showing landing page\n");
+            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
+            break;
+        case PAGE_ROLES_BOOKING:
+            LOG("UI: Showing roles booking page\n");
+            if (g_status_label) lv_obj_remove_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
+            if (g_header) fade_in_obj(g_header, 250, 0);
+            if (g_roles_container) fade_in_obj(g_roles_container, 250, 50);
+            break;
+        case PAGE_SIMPLE_CHECKIN:
+            LOG("UI: Showing simple check-in page\n");
+            if (g_status_label) lv_obj_add_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
+            if (g_header) fade_in_obj(g_header, 250, 0);
+            if (g_checkin_container) {
+                fade_in_obj(g_checkin_container, 250, 50);
+                /* Hide info labels initially - they appear on tag scan */
+                if (g_checkin_lbl_tag)   lv_obj_add_flag(g_checkin_lbl_tag, LV_OBJ_FLAG_HIDDEN);
+                if (g_checkin_lbl_state) lv_obj_add_flag(g_checkin_lbl_state, LV_OBJ_FLAG_HIDDEN);
+                if (g_checkin_lbl_time)  lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
+                /* Show NFC icon with pulse */
+                checkin_show_nfc_icon();
+            }
+            break;
+        case PAGE_EV_CHARGING:
+            LOG("UI: Showing EV charging page (not implemented)\n");
+            /* Not implemented yet - stay on landing */
+            if (g_landing_container) fade_in_obj(g_landing_container, 250, 0);
+            break;
+    }
+    
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(g_display);
+}
+
+/* Generic button press effect callback - color change + scale animation */
+static void btn_press_effect_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        lv_obj_set_style_bg_color(btn, COLOR_PRESSED, LV_PART_MAIN);
+        /* Scale down animation: 100% -> 95% */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, btn);
+        lv_anim_set_values(&a, 256, 244);
+        lv_anim_set_exec_cb(&a, anim_scale_cb);
+        lv_anim_set_duration(&a, 80);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        lv_obj_set_style_bg_color(btn, COLOR_GREY, LV_PART_MAIN);
+        /* Scale back animation: 95% -> 100% */
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, btn);
+        lv_anim_set_values(&a, 244, 256);
+        lv_anim_set_exec_cb(&a, anim_scale_cb);
+        lv_anim_set_duration(&a, 100);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+}
+
+/* Press effect callback for modal close button - no color change, just stays modal bg */
+static void modal_close_btn_press_effect_cb(lv_event_t *e) {
+    (void)e;
+    /* No visual press effect for X button - keeps modal background color */
+}
+
+/* Landing page button callbacks */
+static void landing_btn_simple_checkin_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Landing page - Check-in/Check-out selected\n");
+    show_page(PAGE_SIMPLE_CHECKIN);
+}
+
+static void landing_btn_roles_booking_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Landing page - Roles Booking selected\n");
+    show_page(PAGE_ROLES_BOOKING);
+}
+
+static void landing_btn_ev_charging_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Landing page - EV Charging selected (not implemented)\n");
+    /* Not implemented yet */
+}
+
+static void back_btn_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Back button pressed - returning to landing page\n");
+    g_theme_locked = false;  /* Unlock theme when returning to landing */
+    show_page(PAGE_LANDING);
+}
+
+/* Get IP address of network interface */
+static void get_ip_address(char *buf, size_t buflen) {
+    struct ifaddrs *ifaddr, *ifa;
+    
+    if (getifaddrs(&ifaddr) == -1) {
+        snprintf(buf, buflen, "N/A");
+        return;
+    }
+    
+    /* Walk through linked list of interfaces */
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+        
+        /* Only interested in IPv4 addresses */
+        if (ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+        
+        /* Skip loopback interface */
+        if (strcmp(ifa->ifa_name, "lo") == 0)
+            continue;
+        
+        struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+        inet_ntop(AF_INET, &addr->sin_addr, buf, buflen);
+        freeifaddrs(ifaddr);
+        return;
+    }
+    
+    freeifaddrs(ifaddr);
+    snprintf(buf, buflen, "N/A");
+}
+
+/* Check if any MQTT settings changed and trigger reconnect if needed.
+ * Returns 1 if reconnect was triggered, 0 otherwise. */
+static int check_mqtt_settings_changed(void) {
+    int changed = 0;
+
+    if (g_settings_ta_mqtt) {
+        const char *new_addr = lv_textarea_get_text(g_settings_ta_mqtt);
+        if (new_addr && strcmp(new_addr, g_mqtt_address) != 0) {
+            LOG("UI: MQTT address changed from '%s' to '%s'\n", g_mqtt_address, new_addr);
+            strncpy(g_mqtt_address, new_addr, sizeof(g_mqtt_address) - 1);
+            g_mqtt_address[sizeof(g_mqtt_address) - 1] = '\0';
+            changed = 1;
+        }
+    }
+    if (g_settings_ta_mqtt_user) {
+        const char *new_user = lv_textarea_get_text(g_settings_ta_mqtt_user);
+        if (new_user && strcmp(new_user, g_mqtt_username) != 0) {
+            LOG("UI: MQTT username changed\n");
+            strncpy(g_mqtt_username, new_user, sizeof(g_mqtt_username) - 1);
+            g_mqtt_username[sizeof(g_mqtt_username) - 1] = '\0';
+            changed = 1;
+        }
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        const char *new_pswd = lv_textarea_get_text(g_settings_ta_mqtt_pswd);
+        if (new_pswd && strcmp(new_pswd, g_mqtt_password) != 0) {
+            LOG("UI: MQTT password changed\n");
+            strncpy(g_mqtt_password, new_pswd, sizeof(g_mqtt_password) - 1);
+            g_mqtt_password[sizeof(g_mqtt_password) - 1] = '\0';
+            changed = 1;
+        }
+    }
+
+    if (changed) {
+        mqtt_reconnect();
+        /* Immediately update MQTT indicator */
+        if (g_settings_mqtt_status) {
+            pthread_mutex_lock(&g_mqtt_mutex);
+            int connected = g_mqtt_connected;
+            pthread_mutex_unlock(&g_mqtt_mutex);
+            lv_obj_set_style_text_color(g_settings_mqtt_status,
+                connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+            lv_obj_invalidate(g_settings_mqtt_status);
+        }
+    }
+    return changed;
+}
+
+/* Update settings modal info labels */
+static void update_settings_info(void) {
+    if (!g_settings_modal) return;
+    
+    char ip[32];
+    
+    get_ip_address(ip, sizeof(ip));
+    
+    if (g_settings_val_mac) {
+        lv_label_set_text(g_settings_val_mac, g_device_mac[0] ? g_device_mac : "N/A");
+    }
+    if (g_settings_val_ip) {
+        lv_label_set_text(g_settings_val_ip, ip);
+    }
+    if (g_settings_ta_mqtt) {
+        lv_textarea_set_text(g_settings_ta_mqtt, g_mqtt_address);
+    }
+    if (g_settings_ta_mqtt_user) {
+        lv_textarea_set_text(g_settings_ta_mqtt_user, g_mqtt_username);
+    }
+    if (g_settings_ta_mqtt_pswd) {
+        lv_textarea_set_text(g_settings_ta_mqtt_pswd, g_mqtt_password);
+    }
+    /* Sync MQTT status icon with current connection state */
+    if (g_settings_mqtt_status) {
+        pthread_mutex_lock(&g_mqtt_mutex);
+        int connected = g_mqtt_connected;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+        lv_obj_set_style_text_color(g_settings_mqtt_status,
+            connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+    }
+}
+
+/* Settings button callback - open settings modal */
+static void settings_btn_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Settings button pressed\n");
+    if (g_settings_modal) {
+        update_settings_info();
+        lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_settings_modal);  /* Ensure modal is on top */
+    }
+}
+
+/* Settings close button callback */
+static void settings_close_btn_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Settings modal closed\n");
+    if (g_settings_keyboard) {
+        lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* Clear cursor from any active textarea */
+    if (g_active_textarea) {
+        lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        g_active_textarea = NULL;
+    }
+    if (g_settings_modal) {
+        lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);
+        /* Reset input device to clear any stale press state */
+        if (g_touch_indev) {
+            lv_indev_reset(g_touch_indev, NULL);
+        }
+    }
+
+    /* Check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
+}
+
+/* Keyboard value changed callback - refresh textarea display after each keypress */
+static void mqtt_kb_value_changed_cb(lv_event_t *e) {
+    (void)e;
+    if (g_active_textarea) {
+        lv_obj_invalidate(g_active_textarea);
+    }
+}
+
+/* Keyboard ready callback - Enter key pressed, hide keyboard and apply changes */
+static void mqtt_kb_ready_cb(lv_event_t *e) {
+    (void)e;
+    LOG("UI: Keyboard Enter pressed\n");
+    if (g_settings_keyboard) {
+        lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* Remove cursor from textarea by clearing focus */
+    if (g_active_textarea) {
+        lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        g_active_textarea = NULL;
+    }
+    lv_obj_invalidate(lv_screen_active());
+    /* Check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
+}
+
+/* MQTT textarea click callback - show keyboard for the clicked textarea */
+static void mqtt_ta_click_cb(lv_event_t *e) {
+    lv_obj_t *ta = lv_event_get_target(e);
+    /* LOG("UI: MQTT textarea clicked\n"); */
+    if (g_settings_keyboard) {
+        /* Clear focus from previous textarea */
+        if (g_active_textarea && g_active_textarea != ta) {
+            lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+        }
+        g_active_textarea = ta;
+        lv_keyboard_set_textarea(g_settings_keyboard, ta);
+        /* Set focused state so LVGL shows the cursor */
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);
+        lv_obj_remove_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_settings_keyboard);
+        lv_obj_invalidate(g_settings_keyboard);
+    }
+}
+
+/* Settings modal click callback - hide keyboard when clicking outside textarea,
+ * and check if MQTT address was changed */
+static void settings_modal_click_cb(lv_event_t *e) {
+    lv_obj_t *target = lv_event_get_target(e);
+
+    /* If keyboard is visible, check if click was outside textarea/keyboard to hide it */
+    if (g_settings_keyboard && !lv_obj_has_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN)) {
+        /* Walk up from target to check if click was on a textarea or keyboard (or their children) */
+        lv_obj_t *obj = target;
+        int on_input = 0;
+        while (obj != NULL) {
+            if (obj == g_settings_ta_mqtt || obj == g_settings_ta_mqtt_user ||
+                obj == g_settings_ta_mqtt_pswd || obj == g_settings_keyboard) { on_input = 1; break; }
+            obj = lv_obj_get_parent(obj);
+        }
+        if (!on_input) {
+            lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+            /* Clear cursor from textarea by removing focus */
+            if (g_active_textarea) {
+                lv_obj_clear_state(g_active_textarea, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+                g_active_textarea = NULL;
+            }
+            lv_obj_invalidate(lv_screen_active());
+        } else {
+            return;  /* Click was on textarea/keyboard, nothing to do */
+        }
+    }
+
+    /* Always check if any MQTT settings changed and trigger reconnect */
+    check_mqtt_settings_changed();
+}
+
+static void create_ui(void) {
+    LOG("UI: Starting UI creation...\n");
+
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);  /* Prevent scroll gestures from stealing button clicks */
+
+    LOG("UI: Creating landing page...\n");
+
+    g_landing_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_landing_container);
+    lv_obj_set_size(g_landing_container, 720, 720);
+    lv_obj_set_pos(g_landing_container, 0, 0);
+    lv_obj_set_style_bg_color(g_landing_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_landing_container, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(g_landing_container, LV_OBJ_FLAG_SCROLLABLE);  /* Disable scrolling */
+
+    /* Logo image in top left corner */
+    lv_obj_t *logo_img = lv_image_create(g_landing_container);
+    lv_image_set_src(logo_img, &logo_small);
+    lv_image_set_scale(logo_img, 156);
+    lv_obj_align(logo_img, LV_ALIGN_TOP_LEFT, -14, -20);
+
+    /* Landing page title */
+    g_landing_title = lv_label_create(g_landing_container);
+    lv_label_set_text(g_landing_title, "NFC Terminal Demo");
+    lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_36, LV_PART_MAIN);
+    lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 34);
+
+    /* Settings button (hamburger menu) in top right corner */
+    g_btn_settings = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_settings, 96, 96);
+    lv_obj_align(g_btn_settings, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_style_bg_color(g_btn_settings, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_settings, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_settings, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_settings, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_settings, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_settings, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_ext_click_area(g_btn_settings, 10);  /* 10px extra touch area around button */
+    
+    lv_obj_t *lbl_settings = lv_label_create(g_btn_settings);
+    lv_label_set_text(lbl_settings, FA_ICON_BARS);
+    lv_obj_set_style_text_color(lbl_settings, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_settings, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_settings);
+
+    /* Landing page buttons - vertically centered */
+    const int landing_btn_width = 400;
+    const int landing_btn_height = 80;
+    const int landing_btn_gap = 20;
+    const int landing_total_height = 3 * landing_btn_height + 2 * landing_btn_gap;
+    const int landing_start_y = (720 - landing_total_height) / 2;
+
+    /* Button 1: Check-in/Check-out */
+    g_btn_simple_checkin = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_simple_checkin, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_simple_checkin, (720 - landing_btn_width) / 2, landing_start_y);
+    lv_obj_set_style_bg_color(g_btn_simple_checkin, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_simple_checkin, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_simple_checkin, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_simple_checkin, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_simple_checkin, landing_btn_simple_checkin_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl1 = lv_label_create(g_btn_simple_checkin);
+    lv_label_set_text(lbl1, "Check-in/Check-out");
+    lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl1, THEME_BTN_TEXT, LV_PART_MAIN);
+    lv_obj_center(lbl1);
+
+    /* Button 2: Roles Booking */
+    g_btn_roles_booking = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_roles_booking, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_roles_booking, (720 - landing_btn_width) / 2, landing_start_y + landing_btn_height + landing_btn_gap);
+    lv_obj_set_style_bg_color(g_btn_roles_booking, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_roles_booking, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_roles_booking, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_roles_booking, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_roles_booking, landing_btn_roles_booking_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl2 = lv_label_create(g_btn_roles_booking);
+    lv_label_set_text(lbl2, "Roles Booking");
+    lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl2, THEME_BTN_TEXT, LV_PART_MAIN);
+    lv_obj_center(lbl2);
+
+    /* Button 3: EV Charging */
+    g_btn_ev_charging = lv_button_create(g_landing_container);
+    lv_obj_set_size(g_btn_ev_charging, landing_btn_width, landing_btn_height);
+    lv_obj_set_pos(g_btn_ev_charging, (720 - landing_btn_width) / 2, landing_start_y + 2 * (landing_btn_height + landing_btn_gap));
+    lv_obj_set_style_bg_color(g_btn_ev_charging, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_ev_charging, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_ev_charging, 12, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_ev_charging, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_ev_charging, landing_btn_ev_charging_cb, LV_EVENT_CLICKED, NULL);
+    
+    lv_obj_t *lbl3 = lv_label_create(g_btn_ev_charging);
+    lv_label_set_text(lbl3, "EV Charging");
+    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl3, THEME_BTN_TEXT, LV_PART_MAIN);
+    lv_obj_center(lbl3);
+
+    /*========================================
+       CHECK-IN / CHECK-OUT APP
+     *========================================*/
+    g_checkin_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_checkin_container);
+    lv_obj_set_size(g_checkin_container, 720, 608);
+    lv_obj_set_pos(g_checkin_container, 0, 112);
+    lv_obj_set_style_bg_color(g_checkin_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_checkin_container, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(g_checkin_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_checkin_container, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 1: "Tag: ..." label */
+    g_checkin_lbl_tag = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_tag, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_tag, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_tag, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_tag, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_tag, 680);
+    lv_obj_align(g_checkin_lbl_tag, LV_ALIGN_CENTER, 0, -80);
+    lv_label_set_long_mode(g_checkin_lbl_tag, LV_LABEL_LONG_DOT);
+    lv_obj_add_flag(g_checkin_lbl_tag, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 2: "Checked-in" / "Checked-out" label */
+    g_checkin_lbl_state = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_state, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_state, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_state, COLOR_STATUS_GREEN, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_state, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_state, 680);
+    lv_obj_align(g_checkin_lbl_state, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(g_checkin_lbl_state, LV_OBJ_FLAG_HIDDEN);
+
+    /* Row 3: Time "HH:MM:SS" label */
+    g_checkin_lbl_time = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_lbl_time, "");
+    lv_obj_set_style_text_font(g_checkin_lbl_time, &lv_font_montserrat_56, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_lbl_time, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_lbl_time, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_checkin_lbl_time, 680);
+    lv_obj_align(g_checkin_lbl_time, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_add_flag(g_checkin_lbl_time, LV_OBJ_FLAG_HIDDEN);
+
+    /* NFC icon (centered, shown while waiting for tag) */
+    g_checkin_nfc_icon = lv_label_create(g_checkin_container);
+    lv_label_set_text(g_checkin_nfc_icon, FA_ICON_NFC_BRANDS);
+    lv_obj_set_style_text_font(g_checkin_nfc_icon, &fa_brands_nfc_360, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_checkin_nfc_icon, THEME_BTN_SELECTED, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_checkin_nfc_icon, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(g_checkin_nfc_icon, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(g_checkin_nfc_icon, LV_OBJ_FLAG_HIDDEN);
+
+    /*========================================
+       ROLES BOOKING APP
+     *========================================*/
+    /* Header: 720x116 at top */
+    g_header = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_header);
+    lv_obj_set_size(g_header, 720, 112);
+    lv_obj_set_pos(g_header, 0, 0);
+    lv_obj_set_style_bg_color(g_header, COLOR_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_pad_left(g_header, 16, LV_PART_MAIN);
+
+    /* NFC status icon in header - left side */
+    g_header_nfc_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_nfc_status, FA_ICON_NFC_BRANDS);
+    lv_obj_set_style_text_font(g_header_nfc_status, &fa_brands_nfc_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_nfc_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_nfc_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_nfc_status, 0, LV_PART_MAIN);
+    lv_obj_align(g_header_nfc_status, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* MQTT connection status icon in header - right of NFC icon */
+    g_header_mqtt_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_header_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_mqtt_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_header_mqtt_status, g_header_nfc_status, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /* Status label in header, centered */
+    g_status_label = lv_label_create(g_header);
+    lv_label_set_text(g_status_label, "Initializing NFC...");
+    lv_obj_set_style_text_color(g_status_label, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_status_label, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_align(g_status_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_width(g_status_label, 480);
+    lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
+
+    /* Back button in header, top-right corner */
+    g_btn_back = lv_button_create(g_header);
+    lv_obj_set_size(g_btn_back, 96, 96);
+    lv_obj_align(g_btn_back, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_set_style_bg_color(g_btn_back, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_back, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_back, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_back, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_back, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_back, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_back, back_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_back = lv_label_create(g_btn_back);
+    lv_label_set_text(lbl_back, FA_ICON_EXIT);
+    lv_obj_set_style_text_color(lbl_back, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_back, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_back);
+
+    /* NFC and MQTT status icons are created above (before status label) */
+
+    /* Roles container - holds all role buttons */
+    g_roles_container = lv_obj_create(scr);
+    lv_obj_remove_style_all(g_roles_container);
+    lv_obj_set_size(g_roles_container, 720, 608);
+    lv_obj_set_pos(g_roles_container, 0, 112);
+    lv_obj_set_style_bg_color(g_roles_container, COLOR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_roles_container, LV_OPA_COVER, LV_PART_MAIN);
+
+    /* Button dimensions: 8px gaps, 4 buttons per row */
+    const int btn_width = 170;
+    const int btn_height = 90;
+    const int gap = 8;
+    const int row1_y = 8;  /* First row in container */
+    const int row2_y = row1_y + btn_height + gap;
+
+    /* Create 8 buttons in 2 rows */
+    for (int i = 0; i < NUM_ROLES; i++) {
+        int row = i / 4;
+        int col = i % 4;
+        int x = gap + col * (btn_width + gap);
+        int y = (row == 0) ? row1_y : row2_y;
+
+        g_roles[i].btn = lv_button_create(g_roles_container);
+        lv_obj_set_size(g_roles[i].btn, btn_width, btn_height);
+        lv_obj_set_pos(g_roles[i].btn, x, y);
+        lv_obj_set_style_bg_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(g_roles[i].btn, 8, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_roles[i].btn, THEME_ROLE_UNSELECTED_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_width(g_roles[i].btn, 4, LV_PART_MAIN);
+        lv_obj_set_style_border_opa(g_roles[i].btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_add_event_cb(g_roles[i].btn, role_btn_event_cb, LV_EVENT_CLICKED, &g_roles[i]);
+
+        g_roles[i].label = lv_label_create(g_roles[i].btn);
+        lv_label_set_text(g_roles[i].label, g_role_names[i]);
+        lv_obj_set_style_text_font(g_roles[i].label, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_set_style_text_color(g_roles[i].label, THEME_ROLE_UNSELECTED_TEXT, LV_PART_MAIN);
+        lv_obj_center(g_roles[i].label);
+    }
+
+    /*========================================
+       SETTINGS MODAL
+     *========================================*/
+    g_settings_modal = lv_obj_create(scr);
+    lv_obj_set_size(g_settings_modal, 700, 608);
+    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 44);  /* top edge 8px higher, bottom unchanged */
+    lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_modal, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_modal, 16, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_modal, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_modal, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_settings_modal, 20, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(g_settings_modal, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_remove_flag(g_settings_modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(g_settings_modal, 0, LV_PART_MAIN);  /* Explicit 0 padding; use 20px offsets in children */
+    lv_obj_add_flag(g_settings_modal, LV_OBJ_FLAG_HIDDEN);  /* Start hidden */
+
+    /* Settings title */
+    g_settings_title = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_title, "Settings");
+    lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 20);
+
+    /* Close button (X) */
+    g_settings_close_btn = lv_button_create(g_settings_modal);
+    lv_obj_t *btn_close = g_settings_close_btn;
+    lv_obj_set_size(btn_close, 96, 96);
+    lv_obj_align(btn_close, LV_ALIGN_TOP_RIGHT, -2, 2);
+    lv_obj_set_style_bg_color(btn_close, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(btn_close, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_width(btn_close, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(btn_close, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn_close, modal_close_btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(btn_close, settings_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_ext_click_area(btn_close, 10);  /* 10px extra touch area around button */
+    lv_obj_add_event_cb(g_settings_modal, settings_modal_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_close = lv_label_create(btn_close);
+    lv_label_set_text(lbl_close, FA_ICON_XMARK);
+    lv_obj_set_style_text_color(lbl_close, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_close, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_close);
+
+    /* Row layout constants */
+    const int row_start_y = 94;
+    const int row_gap = 72;
+    const int textarea_height = 44;
+    const int theme_btn_size = 76;
+    const int theme_btn_gap = 16;
+
+    /*--- Row 1: Color Theme buttons ---*/
+    const int theme_row_y = row_start_y - 2;
+
+    /* "Theme:" label */
+    lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_theme_key, "Theme");
+    lv_obj_set_style_text_color(lbl_theme_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_theme_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_theme_key, LV_ALIGN_TOP_LEFT, 20, theme_row_y + (theme_btn_size - 28) / 2);
+
+    /* Button 1: High Contrast - centered group */
+    g_btn_theme_contrast = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_TOP_MID, -(theme_btn_size + theme_btn_gap), theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
+    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
+    lv_label_set_text(lbl_contrast, FA_ICON_CIRCLE_HALF);
+    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_contrast, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_contrast);
+
+    /* Button 2: Dark (Mocha) */
+    g_btn_theme_dark = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_dark, LV_ALIGN_TOP_MID, 0, theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
+    lv_label_set_text(lbl_dark, FA_ICON_MOON);
+    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dark, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_dark);
+
+    /* Button 3: Light (Latte) */
+    g_btn_theme_light = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
+    lv_obj_align(g_btn_theme_light, LV_ALIGN_TOP_MID, theme_btn_size + theme_btn_gap, theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
+    lv_label_set_text(lbl_light, FA_ICON_SUN);
+    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
+    lv_obj_center(lbl_light);
+
+    /*--- Row 2: MQTT Address + connection indicator ---*/
+    const int mqtt_row_y = theme_row_y + theme_btn_size + row_gap - 52 + 6;
+    lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mqtt_key, "MQTT");
+    lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mqtt_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mqtt_key, LV_ALIGN_TOP_LEFT, 20, mqtt_row_y);
+
+    g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
+    lv_obj_set_size(g_settings_ta_mqtt, 488, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt, lbl_mqtt_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    /* MQTT connection status icon */
+    g_settings_mqtt_status = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_mqtt_status, FA_ICON_NETWORK);
+    lv_obj_set_style_text_font(g_settings_mqtt_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_mqtt_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_mqtt_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_mqtt_status, g_settings_ta_mqtt, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /*--- Row 3: MQTT User + Password ---*/
+    const int creds_row_y = mqtt_row_y + row_gap;
+
+    lv_obj_t *lbl_user_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_user_key, "User");
+    lv_obj_set_style_text_color(lbl_user_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_user_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_user_key, LV_ALIGN_TOP_LEFT, 20, creds_row_y);
+
+    g_settings_ta_mqtt_user = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_user, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_user, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_user, "username");
+    lv_obj_set_size(g_settings_ta_mqtt_user, 240, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_user, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_user, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_user, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_user, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_user, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_user, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_user, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_user, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_user, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_user, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt_user, lbl_user_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_user, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    lv_obj_t *lbl_pswd_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_pswd_key, "Pswd");
+    lv_obj_set_style_text_color(lbl_pswd_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_pswd_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 368, creds_row_y);
+
+    g_settings_ta_mqtt_pswd = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_mqtt_pswd, "--");
+    lv_textarea_set_one_line(g_settings_ta_mqtt_pswd, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt_pswd, "password");
+    lv_textarea_set_password_mode(g_settings_ta_mqtt_pswd, true);
+    lv_obj_set_size(g_settings_ta_mqtt_pswd, 220, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_mqtt_pswd, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_mqtt_pswd, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_mqtt_pswd, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_mqtt_pswd, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_mqtt_pswd, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_mqtt_pswd, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_mqtt_pswd, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_mqtt_pswd, lbl_pswd_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    /*--- Row 4: MAC and IP labels ---*/
+    const int info_row_y = creds_row_y + row_gap - 2;
+
+    /* MAC key label */
+    lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_mac_key, "MAC");
+    lv_obj_set_style_text_color(lbl_mac_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_mac_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_mac_key, LV_ALIGN_TOP_LEFT, 20, info_row_y);
+
+    /* MAC value label */
+    g_settings_val_mac = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_mac, "--");
+    lv_obj_set_style_text_color(g_settings_val_mac, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_mac, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_mac, lbl_mac_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    /* IP key label */
+    lv_obj_t *lbl_ip_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_ip_key, "IP");
+    lv_obj_set_style_text_color(lbl_ip_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_ip_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_ip_key, LV_ALIGN_TOP_LEFT, 452, info_row_y);
+
+    /* IP value label */
+    g_settings_val_ip = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_ip, "--");
+    lv_obj_set_style_text_color(g_settings_val_ip, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    LOG("UI: Settings modal created\n");
+
+    /*========================================
+       VIRTUAL KEYBOARD (screen-level, must be last to stay on top)
+     *========================================*/
+    g_settings_keyboard = lv_keyboard_create(scr);
+    lv_obj_set_size(g_settings_keyboard, 700, 300);
+    /* Align keyboard bottom with settings modal bottom (modal bottom = 708px from screen top) */
+    lv_obj_align(g_settings_keyboard, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_keyboard_set_map(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER,
+                        mqtt_kb_map_lc, mqtt_kb_ctrl_lc_map);
+    lv_keyboard_set_map(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_UPPER,
+                        mqtt_kb_map_uc, mqtt_kb_ctrl_uc_map);
+    lv_keyboard_set_mode(g_settings_keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_textarea(g_settings_keyboard, g_settings_ta_mqtt);
+    /* Keyboard background */
+    lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_keyboard, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_keyboard, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_keyboard, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_keyboard, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_keyboard, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(g_settings_keyboard, 4, LV_PART_MAIN);
+    /* Keyboard button styling */
+    lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(g_settings_keyboard, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(g_settings_keyboard, THEME_TEXT, LV_PART_ITEMS);
+    lv_obj_set_style_text_font(g_settings_keyboard, &lv_font_montserrat_18, LV_PART_ITEMS);
+    lv_obj_set_style_radius(g_settings_keyboard, 6, LV_PART_ITEMS);
+    lv_obj_add_event_cb(g_settings_keyboard, mqtt_kb_value_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(g_settings_keyboard, LV_OBJ_FLAG_HIDDEN);
+
+    /* Start on landing page */
+    LOG("UI: Calling show_page(PAGE_LANDING)...\n");
+    show_page(PAGE_LANDING);
+    LOG("UI: UI creation complete.\n");
+}
+
+/*====================
+   MQTT CLIENT (Async with Auto-Reconnect)
+ *====================*/
+
+/* Callback: Successfully connected (MQTT v5.0) */
+static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response) {
+    (void)context;
+    (void)response;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 1;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", g_mqtt_address);
+}
+
+/* Callback: Called when connected (including auto-reconnect) */
+static void mqtt_on_connected(void *context, char *cause) {
+    (void)context;
+    (void)cause;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 1;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    LOG("MQTT: Connected (cause: %s), publishing state ON\n", cause ? cause : "initial");
+    
+    /* Publish online state - called on both initial connect and reconnect */
+    if (!g_mqtt_client) {
+        LOG("MQTT: Client is NULL, cannot publish state\n");
+        return;
+    }
+    
+    char *payload = malloc(32);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for state ON\n");
+        return;
+    }
+    snprintf(payload, 32, "{\"state\":\"ON\"}");
+    
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 1;
+    
+    LOG("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
+    
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &resp);
+    if (rc != MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Failed to queue state ON, rc=%d\n", rc);
+    } else {
+        LOG("MQTT: State ON queued for publish\n");
+    }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
+}
+
+/* Callback: Connection failed (MQTT v5.0) */
+static void mqtt_on_connect_failure(void *context, MQTTAsync_failureData5 *response) {
+    (void)context;
+    pthread_mutex_lock(&g_mqtt_mutex);
+    g_mqtt_connected = 0;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    LOG("MQTT: Connect failed, rc=%d (will auto-retry)\n", response ? response->code : -1);
+}
+
+/* Publish state message (ON/OFF) to state topic - async, non-blocking */
+static void mqtt_publish_state(const char *state) {
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int connected = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+    
+    if (!g_mqtt_client || !connected) {
+        LOG("MQTT: Not connected, skipping state publish\n");
+        return;
+    }
+    
+    char *payload = malloc(32);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for state %s\n", state);
+        return;
+    }
+    snprintf(payload, 32, "{\"state\":\"%s\"}", state);
+    
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 1;  /* Retain state message */
+    
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &resp);
+    if (rc == MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Published state %s to %s\n", state, g_mqtt_state_topic);
+    } else {
+        LOG("MQTT: Failed to publish state, rc=%d\n", rc);
+    }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
+}
+
+static int mqtt_init(void) {
+    MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer5;
+    MQTTAsync_willOptions will_opts = MQTTAsync_willOptions_initializer;
+    MQTTAsync_createOptions create_opts = MQTTAsync_createOptions_initializer;
+    int rc;
+
+    LOG("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
+
+    /* Generate unique client ID by appending random 8-digit suffix */
+    char client_id[64];
+    srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
+    snprintf(client_id, sizeof(client_id), "%s-%08X", MQTT_CLIENT_ID,
+             (unsigned int)(rand() & 0xFFFFFFFF));
+
+    /* Create async client with MQTT v5.0 */
+    create_opts.MQTTVersion = MQTTVERSION_5;
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_address, client_id,
+                          MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
+    if (rc != MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Failed to create client, rc=%d\n", rc);
+        return -1;
+    }
+    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0)\n", g_mqtt_address, client_id);
+
+    /* Set connected callback - called on connect AND auto-reconnect */
+    LOG("MQTT: Setting connected callback...\n");
+    rc = MQTTAsync_setConnected(g_mqtt_client, NULL, mqtt_on_connected);
+    if (rc != MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Failed to set connected callback, rc=%d\n", rc);
+        MQTTAsync_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        return -1;
+    }
+    LOG("MQTT: Connected callback set successfully\n");
+
+    /* Configure Last Will and Testament (LWT) */
+    will_opts.topicName = g_mqtt_state_topic;
+    will_opts.message = "{\"state\":\"OFF\"}";
+    will_opts.qos = MQTT_QOS;
+    will_opts.retained = 1;
+
+    /* Broker detects disconnect in 1.5x keepAlive (~15s) and publishes LWT message */
+    conn_opts.MQTTVersion = MQTTVERSION_5;
+    conn_opts.keepAliveInterval = 10;
+    conn_opts.cleanstart = 1;  /* MQTT v5.0 uses cleanstart instead of cleansession */
+    conn_opts.username = g_mqtt_username;
+    conn_opts.password = g_mqtt_password;
+    conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
+    conn_opts.will = &will_opts;
+    conn_opts.onSuccess5 = mqtt_on_connect;
+    conn_opts.onFailure5 = mqtt_on_connect_failure;
+    conn_opts.automaticReconnect = 1;
+    conn_opts.minRetryInterval = MQTT_RECONNECT_MIN_DELAY;
+    conn_opts.maxRetryInterval = MQTT_RECONNECT_MAX_DELAY;
+
+    LOG("MQTT: LWT configured - topic=%s, message=%s, qos=%d, retained=%d\n",
+           will_opts.topicName, will_opts.message, will_opts.qos, will_opts.retained);
+    LOG("MQTT: keepAlive=%ds (LWT fires after ~%ds on ungraceful disconnect)\n",
+           conn_opts.keepAliveInterval, (int)(conn_opts.keepAliveInterval * 1.5));
+
+    /* Initiate async connection */
+    LOG("MQTT: Initiating connection...\n");
+    rc = MQTTAsync_connect(g_mqtt_client, &conn_opts);
+    if (rc != MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Failed to start connect, rc=%d\n", rc);
+        MQTTAsync_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        return -1;
+    }
+
+    LOG("MQTT: Connection initiated (auto-reconnect: %d-%ds)\n", 
+           MQTT_RECONNECT_MIN_DELAY, MQTT_RECONNECT_MAX_DELAY);
+
+    return 0;
+}
+
+/* Reconnect MQTT client with current g_mqtt_address */
+static void mqtt_reconnect(void) {
+    LOG("MQTT: Reconnecting to new broker address '%s'\n", g_mqtt_address);
+    mqtt_deinit();
+    if (mqtt_init() != 0) {
+        LOG("MQTT: Failed to reconnect to '%s'\n", g_mqtt_address);
+    }
+}
+
+static void mqtt_deinit(void) {
+    if (g_mqtt_client) {
+        pthread_mutex_lock(&g_mqtt_mutex);
+        int connected = g_mqtt_connected;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+        
+        /* Publish offline state before disconnect if currently connected */
+        if (connected) {
+            mqtt_publish_state("OFF");
+            /* Brief delay to allow async OFF message to be sent before disconnect */
+            usleep(200000);  /* 200ms */
+        }
+
+        /* Always disconnect to stop auto-reconnect thread before destroying client.
+         * This is required even when not connected, otherwise the auto-reconnect
+         * background thread keeps running and MQTTAsync_destroy may not clean up
+         * properly, causing subsequent mqtt_init() to fail silently. */
+        LOG("MQTT: Disconnecting...\n");
+        MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
+        opts.timeout = MQTT_TIMEOUT;
+        MQTTAsync_disconnect(g_mqtt_client, &opts);
+
+        pthread_mutex_lock(&g_mqtt_mutex);
+        g_mqtt_connected = 0;
+        pthread_mutex_unlock(&g_mqtt_mutex);
+
+        MQTTAsync_destroy(&g_mqtt_client);
+        g_mqtt_client = NULL;
+        LOG("MQTT: Client destroyed\n");
+    }
+}
+
+static void get_mac_address(void) {
+    unsigned char mac[6] = {0, 0, 0, 0, 0, 0};
+    struct ifaddrs *ifaddr, *ifa;
+
+    if (getifaddrs(&ifaddr) == 0) {
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL)
+                continue;
+            /* Skip loopback and non-packet (AF_PACKET=17) interfaces */
+            if (strcmp(ifa->ifa_name, "lo") == 0)
+                continue;
+            if (ifa->ifa_addr->sa_family != AF_PACKET)
+                continue;
+            /* Use SIOCGIFHWADDR to get MAC for this interface */
+            int sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sock >= 0) {
+                struct ifreq ifr;
+                memset(&ifr, 0, sizeof(ifr));
+                strncpy(ifr.ifr_name, ifa->ifa_name, IFNAMSIZ - 1);
+                if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+                    memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+                    /* Check it's not all zeros */
+                    if (mac[0] || mac[1] || mac[2] || mac[3] || mac[4] || mac[5]) {
+                        close(sock);
+                        freeifaddrs(ifaddr);
+                        goto found;
+                    }
+                }
+                close(sock);
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+
+found:
+    snprintf(g_device_mac, sizeof(g_device_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    /* Build MQTT topics: data/<MAC_NO_COLONS>/nfc and data/<MAC_NO_COLONS>/state */
+    snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%02X%02X%02X%02X%02X%02X/nfc",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%02X%02X%02X%02X%02X%02X/state",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    LOG("MQTT: State topic: %s\n", g_mqtt_state_topic);
+}
+
+/* Publish check-in/check-out state change to data/<TAG-ID> */
+static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in) {
+    if (!g_mqtt_client) {
+        LOG("MQTT: No client, skipping check-in publish\n");
+        return;
+    }
+
+    /* Build tag ID without colons: "A4:FB:3B:A0" -> "A4FB3BA0" */
+    char tag_no_colons[64];
+    int j = 0;
+    for (int i = 0; tag_id[i] && j < (int)sizeof(tag_no_colons) - 1; i++) {
+        if (tag_id[i] != ':') {
+            tag_no_colons[j++] = tag_id[i];
+        }
+    }
+    tag_no_colons[j] = '\0';
+
+    /* Build topic: data/<TAG-ID> */
+    char topic[128];
+    snprintf(topic, sizeof(topic), "data/%s", tag_no_colons);
+
+    /* Build JSON payload */
+    const char *payload = checked_in ? "{\"state\":\"IN\"}" : "{\"state\":\"OUT\"}";
+
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = (void *)payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 1;
+
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, topic, &msg, &resp);
+    if (rc == MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Check-in publish queued payload='%s' to topic='%s' (retained)\n", payload, topic);
+    } else {
+        LOG("MQTT: Failed to queue check-in publish, rc=%d\n", rc);
+    }
+}
+
+static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol) {
+    pthread_mutex_lock(&g_mqtt_mutex);
+    int connected = g_mqtt_connected;
+    pthread_mutex_unlock(&g_mqtt_mutex);
+
+    if (!g_mqtt_client) {
+        LOG("MQTT: No client, skipping publish\n");
+        return;
+    }
+
+    if (!connected) {
+        LOG("MQTT: Not connected, message queued for when connection resumes\n");
+        /* With auto-reconnect, we can still attempt to publish - 
+           it will be queued internally if supported, or fail gracefully */
+    }
+
+    /* Build tag ID without colons: "A4:FB:3B:A0" -> "A4FB3BA0" */
+    char tag_no_colons[64];
+    int j = 0;
+    for (int i = 0; tag_id[i] && j < (int)sizeof(tag_no_colons) - 1; i++) {
+        if (tag_id[i] != ':') {
+            tag_no_colons[j++] = tag_id[i];
+        }
+    }
+    tag_no_colons[j] = '\0';
+
+    /* Build JSON payload with tagId and type */
+    char *payload = malloc(128);
+    if (!payload) {
+        LOG("MQTT: Failed to allocate payload for tag event\n");
+        return;
+    }
+    snprintf(payload, 128, "{\"tagId\":\"%s\",\"type\":\"%s\"}", tag_no_colons, protocol_to_string(protocol));
+
+    /* Async publish - non-blocking */
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = (int)strlen(payload);
+    msg.qos = MQTT_QOS;
+    msg.retained = 0;
+
+    MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
+    int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_topic, &msg, &resp);
+    if (rc == MQTTASYNC_SUCCESS) {
+        LOG("MQTT: Publish queued payload='%s' to topic='%s'\n", payload, g_mqtt_topic);
+    } else {
+        LOG("MQTT: Failed to queue publish, rc=%d\n", rc);
+    }
+    /* Paho copies the payload internally, safe to free now */
+    free(payload);
+}
+
+/* Queue a tag ID for publishing from main thread */
+static void mqtt_queue_tag(const char *tag_id, uint8_t protocol) {
+    pthread_mutex_lock(&g_mqtt_queue_mutex);
+
+    /* Deduplicate: don't queue if same as last queued tag */
+    if (g_mqtt_queue_head != g_mqtt_queue_tail) {
+        int last_idx = (g_mqtt_queue_head - 1 + MQTT_QUEUE_SIZE) % MQTT_QUEUE_SIZE;
+        if (strcmp(g_mqtt_queue[last_idx].tag_id, tag_id) == 0) {
+            pthread_mutex_unlock(&g_mqtt_queue_mutex);
+            return;  /* Skip duplicate */
+        }
+    }
+
+    int next_head = (g_mqtt_queue_head + 1) % MQTT_QUEUE_SIZE;
+    if (next_head != g_mqtt_queue_tail) {
+        mqtt_queue_entry_t *entry = &g_mqtt_queue[g_mqtt_queue_head];
+        snprintf(entry->tag_id, sizeof(entry->tag_id), "%s", tag_id);
+        entry->protocol = protocol;
+        entry->page = g_current_page;
+        /* For check-in mode, look up the current state */
+        if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+            checkin_entry_t *ce = checkin_map_get_or_create(tag_id);
+            entry->checked_in = ce ? ce->checked_in : false;
+        } else {
+            entry->checked_in = false;
+        }
+        g_mqtt_queue_head = next_head;
+    } else {
+        LOG("MQTT: Queue full, dropping message\n");
+    }
+    pthread_mutex_unlock(&g_mqtt_queue_mutex);
+}
+
+/* Process queued MQTT messages - call from main thread only */
+static void mqtt_process_queue(void) {
+    char tag_id[64];
+    uint8_t protocol;
+    uint8_t page;
+    bool checked_in;
+    while (1) {
+        pthread_mutex_lock(&g_mqtt_queue_mutex);
+        if (g_mqtt_queue_head == g_mqtt_queue_tail) {
+            pthread_mutex_unlock(&g_mqtt_queue_mutex);
+            break;
+        }
+        mqtt_queue_entry_t *e = &g_mqtt_queue[g_mqtt_queue_tail];
+        strncpy(tag_id, e->tag_id, sizeof(tag_id) - 1);
+        tag_id[sizeof(tag_id) - 1] = '\0';
+        protocol = e->protocol;
+        page = e->page;
+        checked_in = e->checked_in;
+        g_mqtt_queue_tail = (g_mqtt_queue_tail + 1) % MQTT_QUEUE_SIZE;
+        pthread_mutex_unlock(&g_mqtt_queue_mutex);
+
+        if (page == PAGE_SIMPLE_CHECKIN) {
+            mqtt_publish_checkin_state(tag_id, checked_in);
+        } else {
+            mqtt_publish_tag_event(tag_id, protocol);
+        }
+    }
+}
+
+/*====================
+   SIGNAL HANDLER
+ *====================*/
+static void signal_handler(int sig) {
+    (void)sig;
+    g_running = 0;
+}
+
+/*====================
+   MAIN
+ *====================*/
+int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+    pthread_t nfc_tid;
+
+    /* Setup signal handlers */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+#ifdef DESKTOP_BUILD
+    /* Initialize SDL */
+    if (sdl_init() != 0) {
+        fprintf(stderr, "Failed to initialize SDL\n");
+        return 1;
+    }
+
+    lv_init();
+    lv_tick_set_cb(custom_tick_get);
+
+    /* Create display */
+    g_display = lv_display_create(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    if (!g_display) {
+        fprintf(stderr, "Failed to create display\n");
+        sdl_deinit();
+        return 1;
+    }
+
+    /* Setup draw buffers */
+    static uint8_t buf1[DISPLAY_WIDTH * 180 * 2];  /* 180 lines * 2 bytes/pixel (RGB565) = ~253KB */
+    static uint8_t buf2[DISPLAY_WIDTH * 180 * 2];
+    lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(g_display, sdl_flush_cb);
+
+    /* Initialize mouse input */
+    g_touch_indev = lv_indev_create();
+    if (g_touch_indev) {
+        lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(g_touch_indev, sdl_mouse_read_cb);
+        lv_indev_set_display(g_touch_indev, g_display);
+        LOG("Mouse input initialized\n");
+    }
+#else
+    /* Clear console and hide cursor */
+    clear_console();
+
+    /* Initialize framebuffer */
+    if (fb_init() != 0) {
+        fprintf(stderr, "Failed to initialize framebuffer\n");
+        restore_console();
+        return 1;
+    }
+
+    lv_init();
+    lv_tick_set_cb(custom_tick_get);
+
+    /* Create display */
+    g_display = lv_display_create(g_vinfo.xres, g_vinfo.yres);
+    if (!g_display) {
+        fprintf(stderr, "Failed to create display\n");
+        fb_deinit();
+        restore_console();
+        return 1;
+    }
+
+    /* Setup draw buffers - 1/4 screen height for efficient rendering */
+    static uint8_t buf1[DISPLAY_WIDTH * 180 * 2];  /* 180 lines * 2 bytes/pixel (RGB565) = ~253KB */
+    static uint8_t buf2[DISPLAY_WIDTH * 180 * 2];
+    lv_display_set_buffers(g_display, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(g_display, fb_flush_cb);
+
+    /* Initialize touch input */
+    if (touch_init() == 0) {
+        g_touch_indev = lv_indev_create();
+        if (g_touch_indev) {
+            lv_indev_set_type(g_touch_indev, LV_INDEV_TYPE_POINTER);
+            lv_indev_set_read_cb(g_touch_indev, touch_read_cb);
+            lv_indev_set_display(g_touch_indev, g_display);  /* Associate with display */
+            LOG("Touch input initialized\n");
+        }
+    } else {
+        LOG("Touch: touch_init() FAILED\n");
+    }
+#endif
+
+    create_ui();
+
+    /* Force full screen refresh */
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(g_display);
+
+    get_mac_address();
+
+    /* Initialize MQTT client */
+    if (mqtt_init() != 0) {
+        LOG("Warning: Failed to initialize MQTT client, continuing without MQTT\n");
+    }
+
+    /* Start NFC thread */
+    if (pthread_create(&nfc_tid, NULL, nfc_thread, NULL) != 0) {
+        fprintf(stderr, "Failed to start NFC thread\n");
+#ifdef DESKTOP_BUILD
+        sdl_deinit();
+#else
+        touch_deinit();
+        fb_deinit();
+        restore_console();
+#endif
+        return 1;
+    }
+
+    /* Main loop */
+    int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
+    int last_nfc_ready = -1;       /* Track NFC status changes for UI */
+    while (g_running) {
+        /* Process MQTT queue from main thread */
+        mqtt_process_queue();
+
+        /* Update MQTT status icon on connection state change */
+        {
+            pthread_mutex_lock(&g_mqtt_mutex);
+            int connected = g_mqtt_connected;
+            pthread_mutex_unlock(&g_mqtt_mutex);
+            if (connected != last_mqtt_connected) {
+                last_mqtt_connected = connected;
+                if (g_settings_mqtt_status) {
+                    lv_obj_set_style_text_color(g_settings_mqtt_status,
+                        connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_settings_mqtt_status);
+                }
+                if (g_header_mqtt_status) {
+                    lv_obj_set_style_text_color(g_header_mqtt_status,
+                        connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_header_mqtt_status);
+                }
+            }
+        }
+
+        /* Update NFC status icon on state change */
+        {
+            int nfc_ready = atomic_load(&g_nfc_ready);
+            if (nfc_ready != last_nfc_ready) {
+                last_nfc_ready = nfc_ready;
+                if (g_header_nfc_status) {
+                    lv_obj_set_style_text_color(g_header_nfc_status,
+                        nfc_ready ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_header_nfc_status);
+                }
+            }
+        }
+
+        pthread_mutex_lock(&g_ui_mutex);
+        
+        /* Check if NFC thread requested UI refresh */
+        if (atomic_load(&g_ui_needs_refresh)) {
+            atomic_store(&g_ui_needs_refresh, 0);
+            
+            if (g_current_page == PAGE_SIMPLE_CHECKIN) {
+                /* Check-in mode: show tag result with animation (no header label) */
+                if (g_last_tag_id[0] != '\0') {
+                    checkin_entry_t *entry = checkin_map_get_or_create(g_last_tag_id);
+                    if (entry) {
+                        checkin_show_result(g_last_tag_id, entry->checked_in);
+                    }
+                }
+            } else {
+                /* Roles booking mode */
+                update_status_label();
+                for (int i = 0; i < NUM_ROLES; i++) {
+                    update_button_color(&g_roles[i]);
+                }
+            }
+            
+            lv_obj_invalidate(lv_screen_active());
+            LOG("UI: Refreshed from main loop\n");
+        }
+        
+        uint32_t next_ms = lv_timer_handler();
+        pthread_mutex_unlock(&g_ui_mutex);
+        usleep((next_ms > 1 ? next_ms : 1) * 1000);
+    }
+
+    /* Cleanup */
+    pthread_join(nfc_tid, NULL);
+    mqtt_deinit();
+#ifdef DESKTOP_BUILD
+    sdl_deinit();
+#else
+    touch_deinit();
+    fb_deinit();
+    restore_console();
+#endif
+
+    return 0;
+}

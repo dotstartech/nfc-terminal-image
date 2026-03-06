@@ -1,0 +1,21 @@
+config BR2_PACKAGE_NFC_LVGL_APP
+	bool "nfc-lvgl-app"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_LIBNFC_NCI
+	select BR2_PACKAGE_LIBDRM
+	select BR2_PACKAGE_PAHO_MQTT_C
+	help
+	  NFC check-in/check-out demo application with LVGL graphical UI.
+	  Displays Role A/B buttons and shows NFC tag IDs when cards are detected.
+
+	  https://github.com/dotstartech/nfc-terminal-image
+
+if BR2_PACKAGE_NFC_LVGL_APP
+
+config BR2_PACKAGE_NFC_LVGL_APP_AUTOSTART
+	bool "auto-start on tty1"
+	default y
+	help
+	  Start nfc-lvgl-app automatically on tty1 (the display).
+
+endif

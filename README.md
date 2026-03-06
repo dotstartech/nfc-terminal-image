@@ -73,13 +73,23 @@ git clone https://github.com/buildroot/buildroot.git --branch 2024.02.x --depth 
 
 This configures Buildroot with the external tree and builds everything.
 
-3. **Optional: Customize configuration**:
+3. **Build script commands**:
 
-```bash
-./build.sh menuconfig        # Main buildroot config
-./build.sh linux-menuconfig  # Kernel config
-./build.sh savedefconfig     # Save changes
-```
+| Command | Description |
+|---------|-------------|
+| `./build.sh` | Build the complete image (default, without demo app) |
+| `./build.sh build --demo-app` | Build the image with nfc-lvgl-app demo included |
+| `./build.sh config` | Apply NFC Terminal defconfig without building |
+| `./build.sh menuconfig` | Open Buildroot interactive configuration menu |
+| `./build.sh linux-menuconfig` | Open Linux kernel configuration menu |
+| `./build.sh savedefconfig` | Save current config back to defconfig file |
+| `./build.sh clean` | Remove build artifacts (keeps config) |
+| `./build.sh distclean` | Remove ALL build artifacts and configuration |
+| `./build.sh rebuild-kernel` | Rebuild only the Linux kernel |
+| `./build.sh rebuild-driver` | Rebuild only the ST7703 display driver |
+| `./build.sh flash /dev/sdX` | Flash built image to SD card or eMMC device |
+| `./build.sh rpiboot` | Start rpiboot for CM4 eMMC programming mode |
+| `./build.sh desktop-build` | Build nfc-lvgl-app for desktop (x86_64) with SDL2 for UI testing |
 
 4. **Output files** will be in `buildroot/output/images/`:
    - `nfc-terminal.img` - Complete bootable image
@@ -96,9 +106,14 @@ This configures Buildroot with the external tree and builds everything.
 sudo ./buildroot/output/host/bin/rpiboot
 
 # Wait for eMMC to appear as mass storage, then:
+# IMPORTANT: Unmount any auto-mounted partitions first!
+sudo umount /dev/sdX1 /dev/sdX2 2>/dev/null || true
 sudo dd if=buildroot/output/images/nfc-terminal.img of=/dev/sdX bs=4M status=progress
 sync
 ```
+
+> **Note**: The `./build.sh flash` command will automatically detect and offer to unmount any mounted partitions.
+
 Alternatively Raspberry Pi Imager can be used to flash the image.
 
 4. Disconnect IO board USB from host
@@ -247,6 +262,109 @@ The `nfcDemoApp poll` command starts automatically at boot via the init script `
 
 Logs are written to `/var/log/nfc.log`.
 
+## Touch Integration (FT6336U)
+
+The touchscreen uses a FocalTech FT6336U controller connected via I2C0 at address 0x48. The kernel driver `edt_ft5x06` handles the hardware, exposing touch events through the Linux input subsystem.
+
+### Hardware Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Controller | FocalTech FT6336U |
+| I2C Bus | I2C0 (i2c_vc) |
+| I2C Address | 0x48 |
+| Interrupt GPIO | GPIO25 (falling edge) |
+| Reset GPIO | GPIO24 (active-low) |
+| Kernel Driver | edt_ft5x06 |
+| Input Device | /dev/input/event4 |
+
+### Device Tree Overlay
+
+The touch overlay (`ft6336u-gx040hd.dtbo`) configures:
+- I2C address and compatible string (`focaltech,ft6236`)
+- Interrupt on GPIO25, falling edge trigger
+- Reset control on GPIO24
+
+### LVGL Application Integration
+
+Key implementation details for integrating with LVGL v9.x:
+
+1. **Input Device Setup**: Open `/dev/input/event4` with `O_RDONLY | O_NONBLOCK`
+
+2. **Multitouch Protocol B**: The FT6336U uses Linux MT Protocol B with slots:
+   - `ABS_MT_POSITION_X` / `ABS_MT_POSITION_Y` for coordinates
+   - `ABS_MT_TRACKING_ID >= 0` indicates touch down, `-1` indicates touch up
+   - Also sends `BTN_TOUCH` key events
+
+3. **Coordinate Scaling**: Query touch range using `EVIOCGABS(ABS_MT_POSITION_X/Y)` and scale to display resolution (720x720)
+
+4. **Display Refresh**: After UI changes from touch events, call:
+   - `lv_obj_invalidate(obj)` to mark objects for redraw
+   - `lv_refr_now(display)` to force immediate refresh
+
+### Touch Event Flow
+
+```
+FT6336U Hardware
+      │ (I2C0)
+      ▼
+edt_ft5x06 Kernel Driver
+      │ (GPIO25 interrupt)
+      ▼
+Input Subsystem (/dev/input/event4)
+      │ (read() with O_NONBLOCK)
+      ▼
+LVGL touch_read_cb()
+      │ (parse EV_ABS events)
+      ▼
+LVGL Input Device (LV_INDEV_TYPE_POINTER)
+      │
+      ▼
+LVGL Event System (LV_EVENT_CLICKED, etc.)
+```
+
+## MQTT Client
+
+The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operation and automatic reconnection.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Broker | tcp://192.168.188.50:1883 |
+| Client ID | nfc-terminal |
+| Protocol | MQTT 5.0 (async) |
+| QoS | 2 |
+| Auto-Reconnect | Enabled (1-60s backoff) |
+
+### Topics
+
+| Topic | Description | Retained |
+|-------|-------------|----------|
+| `data/<MAC>/nfc` | NFC tag events (tagId, type) | No |
+| `data/<MAC>/state` | Device state (ON/OFF) | Yes |
+
+The `<MAC>` is the device's eth0 MAC address without colons (e.g., `DCDCA284B7C8`).
+
+### Last Will and Testament (LWT)
+
+On connection, the client registers an LWT message:
+- **Topic**: `data/<MAC>/state`
+- **Payload**: `{"state":"OFF"}`
+- **Retained**: Yes
+
+This ensures the broker publishes the offline state if the device disconnects unexpectedly.
+
+### Auto-Reconnect Behavior
+
+The async MQTT client automatically handles reconnection:
+- **Min retry interval**: 1 second
+- **Max retry interval**: 60 seconds
+- **Backoff**: Exponential between min and max
+- **Reconnection trigger**: Automatic on connection loss (no manual intervention required)
+
+When connection is restored, the client automatically publishes `{"state":"ON"}` to the state topic.
+
 ## Credentials
 
 - **Username**: root
@@ -274,8 +392,8 @@ Edit `board/nfc-terminal/config.txt` for Raspberry Pi boot parameters.
 # Check kernel messages
 dmesg | grep -E "(st7703|dsi|panel|vc4)"
 
-# Verify overlays loaded
-dtoverlay -l
+# Verify overlays in device tree
+ls /proc/device-tree/soc/dsi@*/
 ```
 
 ### Touch not responding
@@ -284,8 +402,11 @@ dtoverlay -l
 # Check I2C devices
 i2cdetect -y 0    # Should show 0x48
 
-# Test touch events
-evtest /dev/input/event0
+# Check touch input device exists
+ls -la /dev/input/event*
+
+# Read raw touch events (hex dump)
+cat /dev/input/event0 | hexdump -C
 ```
 
 ### I2C Issues
@@ -320,8 +441,8 @@ i2cdetect -y 1
 /etc/init.d/S95nfc stop
 nfcDemoApp poll
 
-# Check GPIO assignments
-gpioinfo | grep -E "GPIO5|GPIO6|nfc"
+# Check GPIO status in sysfs
+cat /sys/kernel/debug/gpio | grep -E "gpio-5|gpio-6"
 ```
 
 ## References
