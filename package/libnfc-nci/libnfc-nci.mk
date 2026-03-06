@@ -12,7 +12,13 @@ LIBNFC_NCI_INSTALL_STAGING = YES
 LIBNFC_NCI_DEPENDENCIES = openssl host-automake host-autoconf host-libtool pn5xx-i2c
 
 # Fix for GCC 10+ where -fno-common is default (causes multiple definition errors)
-LIBNFC_NCI_CONF_ENV = CFLAGS="$(TARGET_CFLAGS) -fcommon" CXXFLAGS="$(TARGET_CXXFLAGS) -fcommon"
+# Fix for GCC 14+ where many previously-warning C patterns are now hard errors:
+#   -Wimplicit-function-declaration, -Wimplicit-int, -Wint-conversion,
+#   -Wincompatible-pointer-types, -Wreturn-mismatch
+# This old NFC library has many of these issues; use -fpermissive-equivalent flags
+LIBNFC_NCI_CONF_ENV = \
+	CFLAGS="$(TARGET_CFLAGS) -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=return-mismatch" \
+	CXXFLAGS="$(TARGET_CXXFLAGS) -fcommon"
 
 # Use kernel driver mode - /dev/pn544 interface created by pn5xx-i2c kernel module
 # Do NOT use --enable-alt (that's for userspace GPIO which doesn't work on CM4)

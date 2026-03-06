@@ -62,7 +62,7 @@ sudo apt-get install -y build-essential git wget cpio unzip rsync bc \
 1. **Clone Buildroot**:
 
 ```bash
-git clone https://github.com/buildroot/buildroot.git --branch 2024.02.x --depth 1
+git clone https://github.com/buildroot/buildroot.git --branch 2026.02.x --depth 1
 ```
 
 2. **Build the image**:
