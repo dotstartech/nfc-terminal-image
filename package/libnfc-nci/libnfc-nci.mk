@@ -14,10 +14,10 @@ LIBNFC_NCI_DEPENDENCIES = openssl host-automake host-autoconf host-libtool pn5xx
 # Fix for GCC 10+ where -fno-common is default (causes multiple definition errors)
 # Fix for GCC 14+ where many previously-warning C patterns are now hard errors:
 #   -Wimplicit-function-declaration, -Wimplicit-int, -Wint-conversion,
-#   -Wincompatible-pointer-types, -Wreturn-mismatch
+#   -Wincompatible-pointer-types, -Wreturn-type
 # This old NFC library has many of these issues; use -fpermissive-equivalent flags
 LIBNFC_NCI_CONF_ENV = \
-	CFLAGS="$(TARGET_CFLAGS) -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=return-mismatch" \
+	CFLAGS="$(TARGET_CFLAGS) -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=return-type" \
 	CXXFLAGS="$(TARGET_CXXFLAGS) -fcommon"
 
 # Use kernel driver mode - /dev/pn544 interface created by pn5xx-i2c kernel module
