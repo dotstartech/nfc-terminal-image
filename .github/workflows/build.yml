@@ -77,8 +77,15 @@ jobs:
 
       - name: Build image
         run: |
+          set -o pipefail
           ./build.sh build --demo-app 2>&1 | tail -5000
         timeout-minutes: 120
+
+      - name: Check build output
+        if: always()
+        run: |
+          df -h /
+          ls -lh buildroot/output/images/ 2>/dev/null || echo "No images directory found"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
