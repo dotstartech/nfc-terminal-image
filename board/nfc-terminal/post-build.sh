@@ -56,6 +56,12 @@ panel-sitronix-st7703-gx040hd
 edt_ft5x06
 EOF
 
+# Load DS3231 RTC driver at boot
+cat > ${TARGET_DIR}/etc/modules-load.d/rtc.conf << 'EOF'
+# DS3231 RTC uses the ds1307 driver family
+rtc-ds1307
+EOF
+
 # Load NFC kernel driver at boot
 cat > ${TARGET_DIR}/etc/modules-load.d/nfc.conf << 'EOF'
 # PN5xx NFC I2C driver (creates /dev/pn544)
@@ -123,6 +129,44 @@ exec /usr/bin/nfcDemoApp poll
 NFCEOF
 chmod 755 ${TARGET_DIR}/usr/bin/nfc-console
 fi
+
+# Create hwclock init script to sync system clock from DS3231 RTC at boot
+# and write system time back to RTC on shutdown.
+# Runs as S12 (after S10udev creates /dev/rtc0, after S11modules loads rtc-ds1307)
+# Note: the kernel's CONFIG_RTC_HCTOSYS=y also sets the clock from RTC at kernel
+# init time, but hwclock provides a userspace fallback and handles shutdown sync.
+cat > ${TARGET_DIR}/etc/init.d/S12hwclock << 'HWCLOCKEOF'
+#!/bin/sh
+#
+# S12hwclock - Synchronize system clock with DS3231 hardware RTC
+#
+
+HWCLOCK_ARGS="-u"
+RTC_DEV="/dev/rtc0"
+
+case "$1" in
+  start)
+        if [ -e "$RTC_DEV" ]; then
+            printf "Setting system clock from RTC: "
+            hwclock $HWCLOCK_ARGS --hctosys && echo "OK" || echo "FAIL"
+        else
+            echo "RTC device $RTC_DEV not found, skipping hwclock"
+        fi
+        ;;
+  stop)
+        if [ -e "$RTC_DEV" ]; then
+            printf "Saving system clock to RTC: "
+            hwclock $HWCLOCK_ARGS --systohc && echo "OK" || echo "FAIL"
+        fi
+        ;;
+  *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
+
+exit 0
+HWCLOCKEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S12hwclock
 
 # Create early boot script to run depmod and load display modules
 # This runs before S10udev to ensure modules are available
@@ -349,5 +393,26 @@ fi
 
 # Remove S95nfc if present (nfc-console on tty1 handles autostart)
 rm -f ${TARGET_DIR}/etc/init.d/S95nfc*
+
+# Configure chrony for NTP time synchronization with RTC support
+cat > ${TARGET_DIR}/etc/chrony.conf << 'CHRONYEOF'
+# NFC Terminal Chrony Configuration
+
+# Use public NTP pool servers
+pool pool.ntp.org iburst
+
+# Record the rate at which the system clock gains/losses time
+driftfile /var/lib/chrony/drift
+
+# Allow the system clock to be stepped in the first three updates
+# if its offset is larger than 1 second
+makestep 1.0 3
+
+# Enable kernel synchronisation of the real-time clock (RTC)
+rtcsync
+
+# Serve time even if not synchronized to a time source
+local stratum 10
+CHRONYEOF
 
 echo "NFC Terminal post-build completed"
