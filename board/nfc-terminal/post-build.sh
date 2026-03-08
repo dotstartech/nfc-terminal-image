@@ -415,4 +415,19 @@ rtcsync
 local stratum 10
 CHRONYEOF
 
+# ============================================
+# Image size optimization: remove unneeded files
+# ============================================
+
+# Remove udev hardware database (17MB saved)
+# Not needed on embedded device with fixed hardware
+rm -rf ${TARGET_DIR}/etc/udev/hwdb.d
+rm -f ${TARGET_DIR}/lib/udev/hwdb.bin
+
+# Remove iproute2 extras (keep only 'ip' command)
+for tool in tc ss bridge genl rtmon ifstat nstat rtacct lnstat; do
+    rm -f ${TARGET_DIR}/sbin/${tool}
+done
+rm -rf ${TARGET_DIR}/usr/lib/tc
+
 echo "NFC Terminal post-build completed"

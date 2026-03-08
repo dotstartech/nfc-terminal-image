@@ -73,7 +73,8 @@ CONFIG_USB_DWC2_PCI=y
 
 # USB Hub Support (for carrier boards with USB hubs)
 CONFIG_USB_HID=y
-CONFIG_USB_STORAGE=y
+# USB mass storage disabled (requires SCSI which is removed for image size)
+# CONFIG_USB_STORAGE is not set
 
 # USB Ethernet Support for LAN9500A (dotstartech PoE backplate)
 CONFIG_USB_NET_DRIVERS=y
@@ -85,3 +86,325 @@ CONFIG_USB_NET_SMSC75XX=y
 
 # MII/PHY support (sometimes needed for USB Ethernet)
 CONFIG_MII=y
+
+# ============================================
+# Image Size Optimization
+# Disable unused subsystems (saves ~14MB of kernel modules)
+# Future needs preserved: RAUC (squashfs, dm-verity, loop), I2S MEMS mic
+# ============================================
+
+# --- Media/Camera subsystem (3.7MB, 384 modules) ---
+# No camera or video capture hardware on this terminal
+# CONFIG_MEDIA_SUPPORT is not set
+
+# --- Unused filesystems (~3.8MB) ---
+# Keep: ext4 (root), squashfs + overlayfs (RAUC), fuse, NFS client
+# CONFIG_BCACHEFS_FS is not set
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_OCFS2_FS is not set
+# CONFIG_CIFS is not set
+# CONFIG_SMB_SERVER is not set
+# CONFIG_NFSD is not set
+# CONFIG_GFS2_FS is not set
+# CONFIG_CEPH_FS is not set
+# CONFIG_REISERFS_FS is not set
+# CONFIG_NTFS3_FS is not set
+# CONFIG_NILFS2_FS is not set
+# CONFIG_JFS_FS is not set
+# CONFIG_DLM is not set
+# CONFIG_UBIFS_FS is not set
+# CONFIG_HFS_FS is not set
+# CONFIG_HFSPLUS_FS is not set
+# CONFIG_UDF_FS is not set
+# CONFIG_EROFS_FS is not set
+# CONFIG_ECRYPT_FS is not set
+# CONFIG_9P_FS is not set
+# CONFIG_NET_9P is not set
+# CONFIG_JFFS2_FS is not set
+# CONFIG_CACHEFILES is not set
+# CONFIG_EFIVAR_FS is not set
+# CONFIG_ISO9660_FS is not set
+# CONFIG_EXFAT_FS is not set
+
+# --- Netfilter / firewall (1.1MB, 151 modules) ---
+# No firewall needed on embedded terminal
+# CONFIG_NETFILTER is not set
+
+# --- Unused network subsystems ---
+# CONFIG_NET_SCHED is not set
+# CONFIG_BRIDGE is not set
+# CONFIG_BATMAN_ADV is not set
+# CONFIG_IP_SCTP is not set
+# CONFIG_OPENVSWITCH is not set
+# CONFIG_L2TP is not set
+# CONFIG_IEEE802154 is not set
+# CONFIG_6LOWPAN is not set
+# CONFIG_ATALK is not set
+# CONFIG_AX25 is not set
+# CONFIG_ATM is not set
+# CONFIG_CAN is not set
+# CONFIG_HAMRADIO is not set
+# CONFIG_NET_DSA is not set
+# CONFIG_NFC is not set
+# CONFIG_MPLS is not set
+# CONFIG_RFKILL is not set
+
+# --- Unused network drivers ---
+# Keep: smsc95xx, ax88179, cdc_ether, bcmgenet
+# CONFIG_NET_VENDOR_INTEL is not set
+# CONFIG_NET_VENDOR_REALTEK is not set
+# CONFIG_PPP is not set
+# CONFIG_SLIP is not set
+# CONFIG_BONDING is not set
+
+# --- SCSI + ATA (260K) ---
+# Note: disabling SCSI also disables USB mass storage
+# CONFIG_SCSI is not set
+# CONFIG_ATA is not set
+
+# --- Staging drivers ---
+# Re-enable STAGING for RPi BCM VideoCore services (VCHIQ is critical for firmware IPC)
+# but disable unneeded fbtft small-display framebuffer drivers
+CONFIG_STAGING=y
+CONFIG_BCM_VIDEOCORE=y
+CONFIG_BCM2835_VCHIQ=y
+# CONFIG_BCM2835_VCHIQ_MMAL is not set
+# CONFIG_BCM2835_VCHIQ_MMAL_KUNIT_TEST is not set
+# CONFIG_VIDEO_BCM2835 is not set
+# CONFIG_BCM2835_VCHIQ_MMAL_ISP is not set
+# CONFIG_BCM2835_VCHIQ_MMAL_CODEC is not set
+# CONFIG_SND_BCM2835 is not set
+# CONFIG_FB_TFT is not set
+# CONFIG_VT6656 is not set
+
+# --- Unused driver subsystems ---
+# CONFIG_W1 is not set
+# CONFIG_IIO is not set
+# CONFIG_MTD is not set
+# CONFIG_AUXDISPLAY is not set
+# CONFIG_ACCESSIBILITY is not set
+
+# --- Input: disable joystick and tablet ---
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+
+# --- RAID: disable (keep Device Mapper core + verity + crypt for RAUC) ---
+# CONFIG_BLK_DEV_MD is not set
+# CONFIG_BCACHE is not set
+# CONFIG_DM_RAID is not set
+# CONFIG_DM_MIRROR is not set
+# CONFIG_DM_MULTIPATH is not set
+# CONFIG_DM_DELAY is not set
+# CONFIG_DM_THIN_PROVISIONING is not set
+# CONFIG_DM_SNAPSHOT is not set
+# CONFIG_DM_ZERO is not set
+# CONFIG_DM_LOG_USERSPACE is not set
+# CONFIG_DM_WRITECACHE is not set
+# CONFIG_DM_CACHE is not set
+
+# --- Sound: remove USB audio and virtual sound devices ---
+# Keep: ALSA core + I2S + SoC (future MEMS mic)
+# CONFIG_SND_USB is not set
+# CONFIG_SND_DRIVERS is not set
+
+# --- USB: disable serial converters and gadget drivers ---
+# Keep: xhci, dwc2, hub, hid, usbnet
+# CONFIG_USB_SERIAL is not set
+# CONFIG_USB_GADGET is not set
+# CONFIG_USB_MON is not set
+
+# --- HID: disable exotic/gaming HID drivers ---
+# Keep: generic HID, multitouch, i2c-hid (needed for touchscreen)
+# CONFIG_HID_A4TECH is not set
+# CONFIG_HID_ACRUX is not set
+# CONFIG_HID_ASUS is not set
+# CONFIG_HID_BELKIN is not set
+# CONFIG_HID_BETOP_FF is not set
+# CONFIG_HID_BIGBEN_FF is not set
+# CONFIG_HID_CHERRY is not set
+# CONFIG_HID_CHICONY is not set
+# CONFIG_HID_CP2112 is not set
+# CONFIG_HID_CYPRESS is not set
+# CONFIG_HID_DRAGONRISE is not set
+# CONFIG_HID_ELECOM is not set
+# CONFIG_HID_ELO is not set
+# CONFIG_HID_EMS_FF is not set
+# CONFIG_HID_EZKEY is not set
+# CONFIG_HID_GEMBIRD is not set
+# CONFIG_HID_GREENASIA is not set
+# CONFIG_HID_GYRATION is not set
+# CONFIG_HID_HOLTEK is not set
+# CONFIG_HID_KENSINGTON is not set
+# CONFIG_HID_KEYTOUCH is not set
+# CONFIG_HID_KYE is not set
+# CONFIG_HID_LCPOWER is not set
+# CONFIG_HID_LED is not set
+# CONFIG_HID_LOGITECH is not set
+# CONFIG_HID_MAGICMOUSE is not set
+# CONFIG_HID_MONTEREY is not set
+# CONFIG_HID_NINTENDO is not set
+# CONFIG_HID_NTRIG is not set
+# CONFIG_HID_ORTEK is not set
+# CONFIG_HID_PETALYNX is not set
+# CONFIG_HID_PICOLCD is not set
+# CONFIG_HID_PLAYSTATION is not set
+# CONFIG_HID_PLANTRONICS is not set
+# CONFIG_HID_ROCCAT is not set
+# CONFIG_HID_SAMSUNG is not set
+# CONFIG_HID_SMARTJOYPLUS is not set
+# CONFIG_HID_SONY is not set
+# CONFIG_HID_SPEEDLINK is not set
+# CONFIG_HID_STEAM is not set
+# CONFIG_HID_SUNPLUS is not set
+# CONFIG_HID_THRUSTMASTER is not set
+# CONFIG_HID_TOPSEED is not set
+# CONFIG_HID_TWINHAN is not set
+# CONFIG_HID_UCLOGIC is not set
+# CONFIG_HID_WALTOP is not set
+# CONFIG_HID_WIIMOTE is not set
+# CONFIG_HID_XINMO is not set
+# CONFIG_HID_ZEROPLUS is not set
+# CONFIG_HID_ZYDACRON is not set
+# CONFIG_HID_WACOM is not set
+
+# --- NLS: disable unused codepages (keep cp437 for FAT boot partition) ---
+CONFIG_NLS_CODEPAGE_437=y
+# CONFIG_NLS_CODEPAGE_737 is not set
+# CONFIG_NLS_CODEPAGE_775 is not set
+# CONFIG_NLS_CODEPAGE_850 is not set
+# CONFIG_NLS_CODEPAGE_852 is not set
+# CONFIG_NLS_CODEPAGE_855 is not set
+# CONFIG_NLS_CODEPAGE_857 is not set
+# CONFIG_NLS_CODEPAGE_860 is not set
+# CONFIG_NLS_CODEPAGE_861 is not set
+# CONFIG_NLS_CODEPAGE_862 is not set
+# CONFIG_NLS_CODEPAGE_863 is not set
+# CONFIG_NLS_CODEPAGE_864 is not set
+# CONFIG_NLS_CODEPAGE_865 is not set
+# CONFIG_NLS_CODEPAGE_866 is not set
+# CONFIG_NLS_CODEPAGE_869 is not set
+# CONFIG_NLS_CODEPAGE_874 is not set
+# CONFIG_NLS_CODEPAGE_932 is not set
+# CONFIG_NLS_CODEPAGE_936 is not set
+# CONFIG_NLS_CODEPAGE_949 is not set
+# CONFIG_NLS_CODEPAGE_950 is not set
+# CONFIG_NLS_CODEPAGE_1250 is not set
+# CONFIG_NLS_CODEPAGE_1251 is not set
+# CONFIG_NLS_CODEPAGE_1255 is not set
+# CONFIG_NLS_ISO8859_1 is not set
+# CONFIG_NLS_ISO8859_2 is not set
+# CONFIG_NLS_ISO8859_3 is not set
+# CONFIG_NLS_ISO8859_4 is not set
+# CONFIG_NLS_ISO8859_5 is not set
+# CONFIG_NLS_ISO8859_6 is not set
+# CONFIG_NLS_ISO8859_7 is not set
+# CONFIG_NLS_ISO8859_9 is not set
+# CONFIG_NLS_ISO8859_13 is not set
+# CONFIG_NLS_ISO8859_14 is not set
+# CONFIG_NLS_ISO8859_15 is not set
+# CONFIG_NLS_KOI8_R is not set
+# CONFIG_NLS_KOI8_U is not set
+# CONFIG_NLS_MAC_ROMAN is not set
+# CONFIG_NLS_MAC_CELTIC is not set
+# CONFIG_NLS_MAC_CENTEURO is not set
+# CONFIG_NLS_MAC_CROATIAN is not set
+# CONFIG_NLS_MAC_CYRILLIC is not set
+# CONFIG_NLS_MAC_GAELIC is not set
+# CONFIG_NLS_MAC_GREEK is not set
+# CONFIG_NLS_MAC_ICELAND is not set
+# CONFIG_NLS_MAC_INUIT is not set
+# CONFIG_NLS_MAC_ROMANIAN is not set
+# CONFIG_NLS_MAC_TURKISH is not set
+# CONFIG_NLS_ASCII is not set
+# CONFIG_NLS_EUC_JP is not set
+
+# --- Sound SoC: disable all RPi HAT sound card drivers ---
+# Keep: bcm2835-i2s, soc-core, simple-card, dmic, hdmi-codec (for vc4)
+# CONFIG_SND_BCM2708_SOC_CHIPDIP_DAC is not set
+# CONFIG_SND_BCM2708_SOC_GOOGLEVOICEHAT_SOUNDCARD is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_ADC is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSHD is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSADC is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSADCPRO is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSDSP is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_STUDIO_DAC8X is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI is not set
+# CONFIG_SND_BCM2708_SOC_HIFIBERRY_AMP is not set
+# CONFIG_SND_BCM2708_SOC_RPI_CIRRUS is not set
+# CONFIG_SND_BCM2708_SOC_RPI_DAC is not set
+# CONFIG_SND_BCM2708_SOC_RPI_PROTO is not set
+# CONFIG_SND_BCM2708_SOC_JUSTBOOM_BOTH is not set
+# CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC is not set
+# CONFIG_SND_BCM2708_SOC_JUSTBOOM_DIGI is not set
+# CONFIG_SND_BCM2708_SOC_IQAUDIO_CODEC is not set
+# CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC is not set
+# CONFIG_SND_BCM2708_SOC_IQAUDIO_DIGI is not set
+# CONFIG_SND_BCM2708_SOC_I_SABRE_Q2M is not set
+# CONFIG_SND_BCM2708_SOC_ADAU1977_ADC is not set
+# CONFIG_SND_BCM2708_SOC_DIONAUDIO_LOCO is not set
+# CONFIG_SND_BCM2708_SOC_DIONAUDIO_LOCO_V2 is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_PIANO_DAC is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_PIANO_DAC_PLUS is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_BOSS_DAC is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_BOSS2_DAC is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_DIGIONE is not set
+# CONFIG_SND_BCM2708_SOC_ALLO_KATANA_DAC is not set
+# CONFIG_SND_BCM2708_SOC_FE_PI_AUDIO is not set
+# CONFIG_SND_BCM2708_SOC_PIFI_40 is not set
+# CONFIG_SND_AUDIO_GRAPH_CARD is not set
+# CONFIG_SND_SOC_PISOUND is not set
+# CONFIG_SND_SOC_DACBERRY400 is not set
+# CONFIG_SND_SOC_DIGIDAC1 is not set
+# CONFIG_SND_SOC_AUDIOINJECTOR_PI_SOUNDCARD is not set
+# CONFIG_SND_SOC_AUDIOINJECTOR_OCTO_SOUNDCARD is not set
+# CONFIG_SND_SOC_AUDIOINJECTOR_ISOLATED_SOUNDCARD is not set
+# CONFIG_SND_SOC_AUDIOSENSE_PI is not set
+
+# --- Disable ceph client (120K, no Ceph storage) ---
+# CONFIG_CEPH_LIB is not set
+
+# --- Disable NFS (not needed in production) ---
+# CONFIG_NFS_FS is not set
+# CONFIG_NFSD is not set
+
+# --- Disable RTC drivers except ds1307 ---
+# CONFIG_RTC_DRV_ABX80X is not set
+# CONFIG_RTC_DRV_DS1374 is not set
+# CONFIG_RTC_DRV_DS1672 is not set
+# CONFIG_RTC_DRV_DS3232 is not set
+# CONFIG_RTC_DRV_BQ32K is not set
+# CONFIG_RTC_DRV_EM3027 is not set
+# CONFIG_RTC_DRV_FM3130 is not set
+# CONFIG_RTC_DRV_ISL1208 is not set
+# CONFIG_RTC_DRV_ISL12022 is not set
+# CONFIG_RTC_DRV_M41T80 is not set
+# CONFIG_RTC_DRV_MAX6900 is not set
+# CONFIG_RTC_DRV_PCF2127 is not set
+# CONFIG_RTC_DRV_PCF85063 is not set
+# CONFIG_RTC_DRV_PCF8523 is not set
+# CONFIG_RTC_DRV_PCF85363 is not set
+# CONFIG_RTC_DRV_PCF8563 is not set
+# CONFIG_RTC_DRV_PCF8583 is not set
+# CONFIG_RTC_DRV_RS5C372 is not set
+# CONFIG_RTC_DRV_RV3028 is not set
+# CONFIG_RTC_DRV_RV3029C2 is not set
+# CONFIG_RTC_DRV_RV3032 is not set
+# CONFIG_RTC_DRV_RV8803 is not set
+# CONFIG_RTC_DRV_RX8025 is not set
+# CONFIG_RTC_DRV_RX8581 is not set
+# CONFIG_RTC_DRV_S35390A is not set
+# CONFIG_RTC_DRV_SD3078 is not set
+# CONFIG_RTC_DRV_X1205 is not set
+# CONFIG_RTC_DRV_DS1302 is not set
+# CONFIG_RTC_DRV_DS1305 is not set
+# CONFIG_RTC_DRV_DS1390 is not set
+# CONFIG_RTC_DRV_M41T93 is not set
+# CONFIG_RTC_DRV_M41T94 is not set
+# CONFIG_RTC_DRV_MAX6902 is not set
+# CONFIG_RTC_DRV_R9701 is not set
+# CONFIG_RTC_DRV_RS5C348 is not set
+# CONFIG_RTC_DRV_RX4581 is not set
+# CONFIG_RTC_DRV_PCF2123 is not set
