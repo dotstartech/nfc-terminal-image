@@ -56,6 +56,12 @@ panel-sitronix-st7703-gx040hd
 edt_ft5x06
 EOF
 
+# Load I2S MEMS microphone driver at boot (Adafruit SPH0645LM4H)
+cat > ${TARGET_DIR}/etc/modules-load.d/mic.conf << 'EOF'
+# Google VoiceHAT codec driver (used by Adafruit I2S MEMS Microphone)
+snd-soc-googlevoicehat-codec
+EOF
+
 # Load DS3231 RTC driver at boot
 cat > ${TARGET_DIR}/etc/modules-load.d/rtc.conf << 'EOF'
 # DS3231 RTC uses the ds1307 driver family

@@ -220,7 +220,7 @@ CONFIG_BCM2835_VCHIQ=y
 # CONFIG_DM_CACHE is not set
 
 # --- Sound: remove USB audio and virtual sound devices ---
-# Keep: ALSA core + I2S + SoC (future MEMS mic)
+# Keep: ALSA core + I2S + SoC + Google VoiceHAT (for Adafruit I2S MEMS mic)
 # CONFIG_SND_USB is not set
 # CONFIG_SND_DRIVERS is not set
 
@@ -337,8 +337,9 @@ CONFIG_NLS_CODEPAGE_437=y
 
 # --- Sound SoC: disable all RPi HAT sound card drivers ---
 # Keep: bcm2835-i2s, soc-core, simple-card, dmic, hdmi-codec (for vc4)
+# Keep: googlevoicehat-soundcard (for Adafruit I2S MEMS Microphone)
 # CONFIG_SND_BCM2708_SOC_CHIPDIP_DAC is not set
-# CONFIG_SND_BCM2708_SOC_GOOGLEVOICEHAT_SOUNDCARD is not set
+CONFIG_SND_BCM2708_SOC_GOOGLEVOICEHAT_SOUNDCARD=m
 # CONFIG_SND_BCM2708_SOC_HIFIBERRY_ADC is not set
 # CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC is not set
 # CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS is not set

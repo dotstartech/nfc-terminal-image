@@ -31,6 +31,9 @@ dtoverlay=nfc-pn7150
 
 dtparam=audio=off
 
+# I2S interface (required for Adafruit I2S MEMS Microphone)
+dtparam=i2s=on
+
 # USB mode for CM4 on IO board
 otg_mode=1
 
@@ -47,3 +50,7 @@ dtoverlay=st7703-gx040hd
 
 # FT6336U Touch Controller on I2C0
 dtoverlay=ft6336u-gx040hd
+
+# Adafruit I2S MEMS Microphone (SPH0645LM4H)
+# Uses the Google VoiceHAT soundcard driver via I2S
+dtoverlay=googlevoicehat-soundcard
