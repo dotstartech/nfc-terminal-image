@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdatomic.h>
+#include <sys/wait.h>
 
 #ifdef DESKTOP_BUILD
 #include <SDL2/SDL.h>
@@ -46,6 +47,7 @@ LV_IMAGE_DECLARE(logo_small);
 #define FA_ICON_CIRCLE_HALF    "\xEF\x81\x82"  /* U+F042 - circle-half-stroke (contrast theme) */
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
 #define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
+#define FA_ICON_MICROPHONE     "\xEF\x84\xB0"  /* U+F130 - microphone */
 #define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol */
 
 #include "linux_nfc_api.h"
@@ -302,6 +304,8 @@ static lv_obj_t *g_roles_container = NULL;
 static lv_obj_t *g_btn_back = NULL;
 static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in header */
 static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
+static lv_obj_t *g_header_mic_status = NULL;  /* Microphone status icon in header */
+static pid_t g_arecord_pid = -1;              /* PID of arecord process, -1 if not recording */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -798,7 +802,7 @@ static void update_status_label(void) {
     /* Build status string */
     if (tag_str[0] == '\0') {
         if (nfc_ready) {
-            snprintf(status, sizeof(status), "Waiting for NFC card...");
+            snprintf(status, sizeof(status), "Waiting for NFC...");
         } else {
             snprintf(status, sizeof(status), "Initializing NFC...");
         }
@@ -1455,12 +1459,14 @@ static void show_page(app_page_t page) {
         case PAGE_ROLES_BOOKING:
             LOG("UI: Showing roles booking page\n");
             if (g_status_label) lv_obj_remove_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
+            if (g_header_mic_status) lv_obj_remove_flag(g_header_mic_status, LV_OBJ_FLAG_HIDDEN);
             if (g_header) fade_in_obj(g_header, 250, 0);
             if (g_roles_container) fade_in_obj(g_roles_container, 250, 50);
             break;
         case PAGE_SIMPLE_CHECKIN:
             LOG("UI: Showing simple check-in page\n");
             if (g_status_label) lv_obj_add_flag(g_status_label, LV_OBJ_FLAG_HIDDEN);
+            if (g_header_mic_status) lv_obj_add_flag(g_header_mic_status, LV_OBJ_FLAG_HIDDEN);
             if (g_header) fade_in_obj(g_header, 250, 0);
             if (g_checkin_container) {
                 fade_in_obj(g_checkin_container, 250, 50);
@@ -1964,6 +1970,17 @@ static void create_ui(void) {
     lv_obj_set_style_bg_opa(g_header_mqtt_status, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(g_header_mqtt_status, 0, LV_PART_MAIN);
     lv_obj_align_to(g_header_mqtt_status, g_header_nfc_status, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /* Microphone status icon in header - right of MQTT icon (Roles Booking only) */
+    g_header_mic_status = lv_label_create(g_header);
+    lv_label_set_text(g_header_mic_status, FA_ICON_MICROPHONE);
+    lv_obj_set_style_text_font(g_header_mic_status, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_header_mic_status, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_header_mic_status, THEME_HEADER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_header_mic_status, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_header_mic_status, 0, LV_PART_MAIN);
+    lv_obj_align_to(g_header_mic_status, g_header_mqtt_status, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+    lv_obj_add_flag(g_header_mic_status, LV_OBJ_FLAG_HIDDEN);  /* Hidden by default */
 
     /* Status label in header, centered */
     g_status_label = lv_label_create(g_header);
@@ -2935,6 +2952,44 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < NUM_ROLES; i++) {
                     update_button_color(&g_roles[i]);
                 }
+
+                /* Check if any role is checked in */
+                bool any_checked_in = false;
+                for (int i = 0; i < NUM_ROLES; i++) {
+                    if (g_roles[i].state == ROLE_STATE_CHECKED_IN) {
+                        any_checked_in = true;
+                        break;
+                    }
+                }
+
+                /* Update mic icon color */
+                if (g_header_mic_status) {
+                    lv_obj_set_style_text_color(g_header_mic_status,
+                        any_checked_in ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                    lv_obj_invalidate(g_header_mic_status);
+                }
+
+                /* Start/stop recording based on check-in state */
+                if (any_checked_in && g_arecord_pid == -1) {
+                    pid_t pid = fork();
+                    if (pid == 0) {
+                        /* Child: redirect stdout/stderr to /dev/null */
+                        int devnull = open("/dev/null", O_WRONLY);
+                        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                        execlp("arecord", "arecord", "-D", "dmic", "-c1", "-r", "48000", "-f", "S32_LE", "-t", "wav", "/tmp/recording.wav", (char *)NULL);
+                        _exit(127);
+                    } else if (pid > 0) {
+                        g_arecord_pid = pid;
+                        LOG("MIC: Recording started (pid=%d)\n", pid);
+                    } else {
+                        LOG("MIC: fork() failed: %s\n", strerror(errno));
+                    }
+                } else if (!any_checked_in && g_arecord_pid > 0) {
+                    kill(g_arecord_pid, SIGTERM);
+                    waitpid(g_arecord_pid, NULL, 0);
+                    LOG("MIC: Recording stopped (pid=%d)\n", g_arecord_pid);
+                    g_arecord_pid = -1;
+                }
             }
             
             lv_obj_invalidate(lv_screen_active());
@@ -2947,6 +3002,12 @@ int main(int argc, char *argv[]) {
     }
 
     /* Cleanup */
+    if (g_arecord_pid > 0) {
+        kill(g_arecord_pid, SIGTERM);
+        waitpid(g_arecord_pid, NULL, 0);
+        LOG("MIC: Recording stopped on exit (pid=%d)\n", g_arecord_pid);
+        g_arecord_pid = -1;
+    }
     pthread_join(nfc_tid, NULL);
     mqtt_deinit();
 #ifdef DESKTOP_BUILD

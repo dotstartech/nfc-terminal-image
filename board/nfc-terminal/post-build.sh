@@ -62,6 +62,87 @@ cat > ${TARGET_DIR}/etc/modules-load.d/mic.conf << 'EOF'
 snd-soc-googlevoicehat-codec
 EOF
 
+# ALSA configuration for I2S MEMS microphone with software volume boost
+# The SPH0645LM4H has no hardware gain control, so we use ALSA softvol plugin.
+# I2S is always stereo; the route plugin extracts the left channel as mono.
+cat > ${TARGET_DIR}/etc/asound.conf << 'EOF'
+# Hardware PCM for the I2S microphone (googlevoicehat-soundcard)
+pcm.dmic_hw {
+    type hw
+    card sndrpigooglevoi
+    channels 2
+    format S32_LE
+    rate 48000
+}
+
+# Software volume boost on top of dmic_hw
+pcm.dmic_sv {
+    type softvol
+    slave.pcm dmic_hw
+    control {
+        name "Boost Capture Volume"
+        card sndrpigooglevoi
+    }
+    min_dB -5.0
+    max_dB 30.0
+}
+
+# Mono capture - extracts left channel from stereo I2S stream
+pcm.dmic {
+    type route
+    slave.pcm dmic_sv
+    slave.channels 2
+    ttable.0.0 1
+}
+EOF
+
+# Init script to set microphone boost level at boot
+# The softvol control is only created after the first PCM open,
+# so we do a brief dummy capture to instantiate it, then set the level.
+cat > ${TARGET_DIR}/etc/init.d/S13mic << 'MICEOF'
+#!/bin/sh
+#
+# S13mic - Initialize I2S microphone capture volume
+#
+
+CARD="sndrpigooglevoi"
+BOOST_PCT=85
+
+case "$1" in
+  start)
+        # Wait for sound card (max 5 seconds)
+        count=0
+        while ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD" && [ $count -lt 50 ]; do
+            usleep 100000
+            count=$((count + 1))
+        done
+
+        if ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD"; then
+            echo "Mic: sound card $CARD not found, skipping"
+            exit 0
+        fi
+
+        # Brief dummy capture to create the softvol control
+        arecord -D dmic_sv -c2 -r 48000 -f S32_LE -d 1 /dev/null >/dev/null 2>&1
+
+        # Set boost level
+        if amixer -c "$CARD" cset numid=1 "${BOOST_PCT}%" >/dev/null 2>&1; then
+            echo "Mic: boost set to ${BOOST_PCT}%"
+        else
+            echo "Mic: failed to set boost level"
+        fi
+        ;;
+  stop)
+        ;;
+  *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
+
+exit 0
+MICEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S13mic
+
 # Load DS3231 RTC driver at boot
 cat > ${TARGET_DIR}/etc/modules-load.d/rtc.conf << 'EOF'
 # DS3231 RTC uses the ds1307 driver family
