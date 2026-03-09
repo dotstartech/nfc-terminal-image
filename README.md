@@ -18,6 +18,7 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 - FT6336U touchscreen support
 - PN7150 NFC with kernel driver (pn5xx_i2c) and libnfc-nci
 - DS3231 RTC support
+- I2S MEMS microphone support (Adafruit SPH0645LM4H)
 - RAUC OTA updates with A/B rootfs partition scheme
 - I2C interface enabled (I2C0 and I2C1)
 - USB Ethernet (smsc95xx for PoE backplate)
@@ -370,6 +371,37 @@ The async MQTT client automatically handles reconnection:
 - **Reconnection trigger**: Automatic on connection loss (no manual intervention required)
 
 When connection is restored, the client automatically publishes `{"state":"ON"}` to the state topic.
+
+## I2S MEMS Microphone (Adafruit SPH0645LM4H)
+
+The image supports the [Adafruit I2S MEMS Microphone Breakout](https://www.adafruit.com/product/3421) using the Google VoiceHAT soundcard driver.
+
+### Driver Stack
+
+- **Device tree overlay**: `googlevoicehat-soundcard` (enables I2S and registers ASoC card)
+- **Kernel modules**: `snd-soc-bcm2835-i2s` (I2S controller), `snd-soc-googlevoicehat-codec` (codec driver), `snd-soc-rpi-simple-soundcard` (machine driver)
+- **config.txt**: `dtparam=i2s=on` and `dtoverlay=googlevoicehat-soundcard`
+- **Sample rate**: Fixed at 48 kHz
+
+### Recording
+
+List capture devices:
+
+```bash
+arecord -l
+```
+
+Record a mono WAV file (adjust card number from `arecord -l` output):
+
+```bash
+arecord -D plughw:2 -c1 -r 48000 -f S32_LE -t wav -V mono -v test.wav
+```
+
+Stop recording with `Ctrl+C`. Copy the file to your host:
+
+```bash
+scp -O root@<device-ip>:/root/test.wav .
+```
 
 ## OTA Updates (RAUC)
 
