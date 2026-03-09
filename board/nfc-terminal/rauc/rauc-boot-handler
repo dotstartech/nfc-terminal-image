@@ -1,0 +1,122 @@
+#!/bin/sh
+# RAUC custom bootloader backend for Raspberry Pi CM4
+# Manages A/B boot selection via cmdline.txt on the boot partition
+#
+# Called by RAUC with:
+#   get-primary           -> print primary slot bootname
+#   set-primary <name>    -> set primary slot and update cmdline.txt
+#   get-state <name>      -> print "good" or "bad"
+#   set-state <name> <s>  -> set state to "good" or "bad"
+#   get-current           -> print currently booted slot bootname
+
+BOOT_MOUNT="/boot"
+BOOT_DEV="/dev/mmcblk0p1"
+BOOT_STATE="${BOOT_MOUNT}/boot.ini"
+CMDLINE="${BOOT_MOUNT}/cmdline.txt"
+CMDLINE_OPTS="rootwait console=ttyAMA0,115200 quiet loglevel=0 vt.global_cursor_default=0"
+
+ensure_mounted() {
+    if ! mountpoint -q "$BOOT_MOUNT"; then
+        mount -t vfat "$BOOT_DEV" "$BOOT_MOUNT" || exit 1
+    fi
+}
+
+init_state() {
+    PRIMARY="A"
+    A_OK=1
+    A_ATTEMPTS=3
+    B_OK=0
+    B_ATTEMPTS=0
+}
+
+read_state() {
+    if [ -f "$BOOT_STATE" ]; then
+        . "$BOOT_STATE"
+    else
+        init_state
+        write_state
+    fi
+}
+
+write_state() {
+    cat > "${BOOT_STATE}" << EOF
+PRIMARY="${PRIMARY}"
+A_OK=${A_OK}
+A_ATTEMPTS=${A_ATTEMPTS}
+B_OK=${B_OK}
+B_ATTEMPTS=${B_ATTEMPTS}
+EOF
+    sync
+}
+
+slot_to_root() {
+    case "$1" in
+        A) echo "/dev/mmcblk0p2" ;;
+        B) echo "/dev/mmcblk0p3" ;;
+        *) exit 1 ;;
+    esac
+}
+
+write_cmdline() {
+    local root
+    root=$(slot_to_root "$1") || exit 1
+    echo "root=${root} ${CMDLINE_OPTS} rauc.slot=$1" > "$CMDLINE"
+    sync
+}
+
+case "$1" in
+    get-primary)
+        ensure_mounted
+        read_state
+        echo "$PRIMARY"
+        ;;
+
+    set-primary)
+        ensure_mounted
+        read_state
+        PRIMARY="$2"
+        write_state
+        write_cmdline "$2"
+        ;;
+
+    get-state)
+        ensure_mounted
+        read_state
+        case "$2" in
+            A) [ "$A_OK" = "1" ] && echo "good" || echo "bad" ;;
+            B) [ "$B_OK" = "1" ] && echo "good" || echo "bad" ;;
+            *) exit 1 ;;
+        esac
+        ;;
+
+    set-state)
+        ensure_mounted
+        read_state
+        case "$2" in
+            A)
+                if [ "$3" = "good" ]; then A_OK=1; else A_OK=0; fi
+                ;;
+            B)
+                if [ "$3" = "good" ]; then B_OK=1; else B_OK=0; fi
+                ;;
+            *) exit 1 ;;
+        esac
+        write_state
+        ;;
+
+    get-current)
+        slot=$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)
+        if [ -n "$slot" ]; then
+            echo "$slot"
+        else
+            exit 1
+        fi
+        ;;
+
+    *)
+        echo "Usage: $0 {get-primary|set-primary|get-state|set-state|get-current}" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

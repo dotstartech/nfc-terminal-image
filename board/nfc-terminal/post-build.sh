@@ -317,7 +317,10 @@ EOF
 mkdir -p ${TARGET_DIR}/boot
 if ! grep -q "/dev/mmcblk0p1" ${TARGET_DIR}/etc/fstab; then
     echo "# Boot partition (config.txt, overlays, etc.)" >> ${TARGET_DIR}/etc/fstab
-    echo "/dev/mmcblk0p1  /boot           vfat    defaults,noatime        0       2" >> ${TARGET_DIR}/etc/fstab
+    echo "/dev/mmcblk0p1  /boot           vfat    defaults,noatime,iocharset=utf8  0       2" >> ${TARGET_DIR}/etc/fstab
+else
+    # Update existing entry to ensure iocharset=utf8 is present
+    sed -i 's|/dev/mmcblk0p1.*|/dev/mmcblk0p1  /boot           vfat    defaults,noatime,iocharset=utf8  0       2|' ${TARGET_DIR}/etc/fstab
 fi
 
 # Create boot-complete init script that blinks LED to indicate successful boot
@@ -429,5 +432,68 @@ for tool in tc ss bridge genl rtmon ifstat nstat rtacct lnstat; do
     rm -f ${TARGET_DIR}/sbin/${tool}
 done
 rm -rf ${TARGET_DIR}/usr/lib/tc
+
+# ============================================
+# RAUC OTA Update Integration
+# ============================================
+
+# Install RAUC system configuration
+mkdir -p ${TARGET_DIR}/etc/rauc
+cp ${BOARD_DIR}/rauc/system.conf ${TARGET_DIR}/etc/rauc/system.conf
+
+# Install RAUC CA certificate (keyring for bundle verification)
+if [ -f ${BOARD_DIR}/rauc/certs/ca.cert.pem ]; then
+    cp ${BOARD_DIR}/rauc/certs/ca.cert.pem ${TARGET_DIR}/etc/rauc/ca.cert.pem
+else
+    echo "WARNING: RAUC CA certificate not found! Run board/nfc-terminal/rauc/certgen.sh first."
+fi
+
+# Install custom bootloader backend handler
+mkdir -p ${TARGET_DIR}/usr/lib/rauc
+cp ${BOARD_DIR}/rauc/rauc-boot-handler ${TARGET_DIR}/usr/lib/rauc/rauc-boot-handler
+chmod 755 ${TARGET_DIR}/usr/lib/rauc/rauc-boot-handler
+
+# Create mount points for boot and data partitions
+mkdir -p ${TARGET_DIR}/boot
+mkdir -p ${TARGET_DIR}/data
+
+# Add fstab entries for boot and data partitions
+if [ -e ${TARGET_DIR}/etc/fstab ]; then
+    if ! grep -q "mmcblk0p1" ${TARGET_DIR}/etc/fstab; then
+        echo "" >> ${TARGET_DIR}/etc/fstab
+        echo "# Boot partition (shared between A/B slots)" >> ${TARGET_DIR}/etc/fstab
+        echo "/dev/mmcblk0p1	/boot	vfat	defaults,noatime,iocharset=utf8	0	0" >> ${TARGET_DIR}/etc/fstab
+    fi
+    if ! grep -q "mmcblk0p4" ${TARGET_DIR}/etc/fstab; then
+        echo "# Persistent data partition (RAUC status, configs)" >> ${TARGET_DIR}/etc/fstab
+        echo "/dev/mmcblk0p4	/data	ext4	defaults,noatime	0	0" >> ${TARGET_DIR}/etc/fstab
+    fi
+fi
+
+# Create RAUC mark-good init script
+# Runs late (S99) after all services have started successfully
+cat > ${TARGET_DIR}/etc/init.d/S99rauc << 'RAUCEOF'
+#!/bin/sh
+#
+# S99rauc - Mark current RAUC slot as good after successful boot
+#
+
+case "$1" in
+  start)
+        if [ -x /usr/bin/rauc ]; then
+            printf "Marking RAUC slot as good: "
+            /usr/bin/rauc status mark-good && echo "OK" || echo "FAIL"
+        fi
+        ;;
+  stop)
+        ;;
+  *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
+
+exit 0
+RAUCEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S99rauc
 
 echo "NFC Terminal post-build completed"

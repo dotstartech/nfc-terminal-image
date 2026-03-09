@@ -18,6 +18,7 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 - FT6336U touchscreen support
 - PN7150 NFC with kernel driver (pn5xx_i2c) and libnfc-nci
 - DS3231 RTC support
+- RAUC OTA updates with A/B rootfs partition scheme
 - I2C interface enabled (I2C0 and I2C1)
 - USB Ethernet (smsc95xx for PoE backplate)
 
@@ -29,10 +30,15 @@ nfc-terminal-image/
 ├── board/nfc-terminal/        # Board-specific files
 │   ├── config.txt             # Boot configuration
 │   ├── cmdline.txt            # Kernel command line
-│   ├── genimage.cfg           # Image generation config
+│   ├── genimage.cfg           # Image generation config (A/B layout)
 │   ├── linux.config.fragment  # Kernel config additions
 │   ├── overlays/              # Device tree overlays
 │   │   └── nfc-pn7150.dts     # NFC PN7150 overlay
+│   ├── rauc/                  # RAUC OTA configuration
+│   │   ├── system.conf        # RAUC system config (slots, bootloader)
+│   │   ├── rauc-boot-handler  # Custom bootloader backend script
+│   │   ├── certgen.sh         # Development certificate generator
+│   │   └── certs/             # Generated certs (gitignored)
 │   ├── post-build.sh          # Post-build customization
 │   └── post-image.sh          # Image generation script
 ├── configs/                   # Buildroot defconfigs
@@ -365,6 +371,319 @@ The async MQTT client automatically handles reconnection:
 
 When connection is restored, the client automatically publishes `{"state":"ON"}` to the state topic.
 
+## OTA Updates (RAUC)
+
+The image uses [RAUC](https://rauc.io/) for robust over-the-air (OTA) updates with an A/B partition scheme. Updates are atomic — the system either boots the new version or automatically stays on the old one.
+
+### Partition Layout
+
+```
+┌────────────┬────────────┬────────────┬────────────┐
+│    boot    │  rootfs_a  │  rootfs_b  │    data    │
+│   (FAT32)  │   (ext4)   │   (ext4)   │   (ext4)   │
+│    32 MB   │   64 MB    │   64 MB    │   16 MB    │
+│  /dev/     │  /dev/     │  /dev/     │  /dev/     │
+│  mmcblk0p1 │  mmcblk0p2 │  mmcblk0p3 │  mmcblk0p4 │
+├────────────┼────────────┼────────────┼────────────┤
+│  Kernel,   │  Slot A    │  Slot B    │  Persistent│
+│  DTBs,     │  (factory  │  (empty    │  state,    │
+│  firmware, │   image)   │  initially)│  rauc.     │
+│  boot.ini, │            │            │  status    │
+│  cmdline   │            │            │            │
+└────────────┴────────────┴────────────┴────────────┘
+```
+
+- **boot**: Shared boot partition with kernel, device trees, firmware, and boot state. Both slots share the same kernel — only the rootfs is swapped.
+- **rootfs_a / rootfs_b**: A/B root filesystem slots. The factory image populates slot A; slot B is left empty for the first OTA update.
+- **data**: Persistent partition mounted at `/data`, stores `rauc.status` and survives updates.
+
+### How A/B Updates Work
+
+1. The RPi CM4 firmware reads `cmdline.txt` from the boot partition at power-on — this selects which rootfs partition to mount via the `root=` parameter.
+2. RAUC detects the currently booted slot by reading `rauc.slot=A|B` from `/proc/cmdline`.
+3. When an update bundle is installed, RAUC writes the new rootfs image to the **inactive** slot.
+4. RAUC calls the custom boot handler to set the new slot as primary — this rewrites `cmdline.txt` to point to the new partition.
+5. On reboot, the firmware boots into the updated slot.
+6. An init script (`S99rauc`) calls `rauc status mark-good` after a successful boot, confirming the update.
+
+Since the RPi CM4 uses the Raspberry Pi firmware bootloader (not U-Boot or Barebox), a custom bootloader backend script manages slot selection by rewriting `cmdline.txt` and tracking state in `boot.ini` on the FAT boot partition.
+
+### System Configuration
+
+RAUC system config is at `/etc/rauc/system.conf` on the target:
+
+```ini
+[system]
+compatible=nfc-terminal-cm4
+bootloader=custom
+statusfile=/data/rauc.status
+bundle-formats=-plain
+
+[handlers]
+bootloader-custom-backend=/usr/lib/rauc/rauc-boot-handler
+
+[slot.rootfs.0]
+device=/dev/mmcblk0p2
+type=ext4
+bootname=A
+
+[slot.rootfs.1]
+device=/dev/mmcblk0p3
+type=ext4
+bootname=B
+```
+
+Key settings:
+- **compatible**: Bundles must match `nfc-terminal-cm4` or they are rejected
+- **bundle-formats=-plain**: Only verity-signed bundles accepted (plain format disabled for security)
+- **bootloader=custom**: Uses the shell script backend at `/usr/lib/rauc/rauc-boot-handler`
+
+### Certificate Management
+
+RAUC uses X.509 certificates for bundle verification. The target device has a CA certificate (keyring) installed at `/etc/rauc/ca.cert.pem`, and only bundles signed with a certificate chaining to this CA are accepted.
+
+#### Development Certificates
+
+Generate development certificates for testing:
+
+```bash
+cd board/nfc-terminal/rauc
+./certgen.sh
+```
+
+This creates `board/nfc-terminal/rauc/certs/`:
+- `ca.key.pem` / `ca.cert.pem` — Certificate Authority (keyring)
+- `signing.key.pem` / `signing.cert.pem` — Bundle signing key/cert
+
+> **Security**: The `certs/` directory is gitignored. Never commit private keys. For production, use a proper PKI with an HSM or secure key storage.
+
+#### Production Certificates
+
+For production deployments:
+
+1. Generate a production CA with a strong key stored in an HSM
+2. Create separate signing certificates per release channel
+3. Replace `board/nfc-terminal/rauc/certs/ca.cert.pem` with your production CA certificate before building the image
+4. Keep signing keys on a secure build server only
+
+### Creating Update Bundles
+
+Update bundles are SquashFS images containing the new rootfs, signed with the signing certificate.
+
+#### 1. Build the image
+
+```bash
+./build.sh
+```
+
+#### 2. Create a RAUC bundle manifest
+
+Create a temporary directory with the manifest and rootfs:
+
+```bash
+mkdir -p /tmp/rauc-bundle
+cat > /tmp/rauc-bundle/manifest.raucm << 'EOF'
+[update]
+compatible=nfc-terminal-cm4
+version=1.0.0
+
+[image.rootfs]
+filename=rootfs.ext4
+type=ext4
+EOF
+
+cp buildroot/output/images/rootfs.ext4 /tmp/rauc-bundle/
+```
+
+#### 3. Sign and create the bundle
+
+```bash
+buildroot/output/host/bin/rauc bundle \
+    --cert=board/nfc-terminal/rauc/certs/signing.cert.pem \
+    --key=board/nfc-terminal/rauc/certs/signing.key.pem \
+    /tmp/rauc-bundle \
+    buildroot/output/images/nfc-terminal-update.raucb
+```
+
+#### 4. Verify the bundle (optional)
+
+```bash
+buildroot/output/host/bin/rauc info \
+    --keyring=board/nfc-terminal/rauc/certs/ca.cert.pem \
+    buildroot/output/images/nfc-terminal-update.raucb
+```
+
+### Installing Updates
+
+#### Local Update via SSH
+
+Copy the bundle to the device and install:
+
+```bash
+# Copy bundle to device
+scp buildroot/output/images/nfc-terminal-update.raucb root@<device-ip>:/tmp/
+
+# SSH into device and install
+ssh root@<device-ip>
+rauc install /tmp/nfc-terminal-update.raucb
+
+# Reboot to activate the update
+reboot
+```
+
+#### Network Update via HTTP(S)
+
+Host the bundle on an HTTP server and install directly from the URL:
+
+```bash
+# On the build host — serve bundles
+cd buildroot/output/images
+python3 -m http.server 8080
+
+# On the device — install from network
+rauc install http://<host-ip>:8080/nfc-terminal-update.raucb
+```
+
+For production, use an HTTPS server with a proper TLS certificate.
+
+### Checking Update Status
+
+```bash
+# Show full slot status
+rauc status
+
+# Example output:
+# === System Info ===
+# Compatible:  nfc-terminal-cm4
+# Booted from: rootfs.0 (A)
+#
+# === Slot Status ===
+# o [rootfs.0] (/dev/mmcblk0p2, ext4, booted)
+#     bootname: A
+#     boot status: good
+# o [rootfs.1] (/dev/mmcblk0p3, ext4, inactive)
+#     bootname: B
+#     boot status: bad
+
+# Show only the booted slot
+rauc status --detailed
+
+# Mark current slot as good (done automatically by S99rauc init script)
+rauc status mark-good
+
+# Mark current slot as bad (triggers rollback on next reboot)
+rauc status mark-bad
+```
+
+### Testing the Full Update Cycle
+
+#### Test 1: First OTA Update (populates slot B)
+
+```bash
+# 1. Flash the factory image to eMMC
+# 2. Boot the device — it starts on slot A
+
+# On device:
+rauc status
+# → Booted from rootfs.0 (A), rootfs.1 (B) is inactive/bad
+
+# 3. Make a change to the rootfs (e.g., bump version) and create a new bundle
+# 4. Install the update
+rauc install /tmp/nfc-terminal-update.raucb
+# → RAUC writes to slot B, sets B as primary
+
+# 5. Reboot
+reboot
+# → Device boots from slot B
+
+# 6. Verify
+rauc status
+# → Booted from rootfs.1 (B), rootfs.0 (A) is still good
+```
+
+#### Test 2: Rollback (mark current slot bad)
+
+```bash
+# On device (booted from slot B):
+rauc status mark-bad
+reboot
+# → Device boots back to slot A (the last known-good slot)
+```
+
+#### Test 3: Verify boot state persistence
+
+```bash
+# Check boot state file on the boot partition
+cat /boot/boot.ini
+# → Shows PRIMARY, A_OK, A_ATTEMPTS, B_OK, B_ATTEMPTS
+
+# Check kernel command line
+cat /proc/cmdline
+# → Shows root=/dev/mmcblk0p2 or p3, and rauc.slot=A or B
+```
+
+### RAUC OTA Troubleshooting
+
+#### Bundle installation fails with "incompatible"
+
+The bundle's `compatible` field must exactly match the system config. Check:
+```bash
+rauc info /tmp/update.raucb   # on host or device
+cat /etc/rauc/system.conf     # on device
+```
+
+#### Bundle rejected with signature error
+
+The bundle must be signed with a certificate that chains to the CA keyring on the device:
+```bash
+# Verify the keyring matches
+openssl x509 -in /etc/rauc/ca.cert.pem -noout -subject
+# Compare with the CA used to sign the bundle
+```
+
+#### Boot handler errors
+
+Check that the boot handler is executable and functional:
+```bash
+# Test handler commands manually
+/usr/lib/rauc/rauc-boot-handler get-current    # Should print A or B
+/usr/lib/rauc/rauc-boot-handler get-primary     # Should print A or B
+/usr/lib/rauc/rauc-boot-handler get-state A     # Should print good or bad
+
+# Check boot partition is mounted
+mountpoint /boot
+
+# Check boot state
+cat /boot/boot.ini
+```
+
+#### Device stuck on wrong slot
+
+Manually fix the boot state:
+```bash
+# Mount boot partition if needed
+mount -t vfat /dev/mmcblk0p1 /boot
+
+# Manually set primary slot to A
+/usr/lib/rauc/rauc-boot-handler set-primary A
+
+# Verify cmdline.txt was updated
+cat /boot/cmdline.txt
+# → root=/dev/mmcblk0p2 ... rauc.slot=A
+
+reboot
+```
+
+#### Checking available space
+
+```bash
+# Check rootfs usage (must fit in 64MB)
+df -h /
+
+# Check data partition
+df -h /data
+```
+
 ## Credentials
 
 - **Username**: root
@@ -448,6 +767,8 @@ cat /sys/kernel/debug/gpio | grep -E "gpio-5|gpio-6"
 ## References
 
 - [Buildroot Manual](https://buildroot.org/downloads/manual/manual.html)
+- [RAUC Documentation](https://rauc.readthedocs.io/en/latest/)
+- [RAUC Buildroot Integration](https://rauc.readthedocs.io/en/latest/integration.html#buildroot)
 - [Carrier Board](https://github.com/dotstartech/wall-panel)
 - [ST7703 Display Driver](https://github.com/dotstartech/st7703-gx040hd-driver)
 - [libnfc-nci Fork](https://github.com/dotstartech/linux_libnfc-nci)

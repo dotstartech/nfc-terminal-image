@@ -87,10 +87,26 @@ CONFIG_USB_NET_SMSC75XX=y
 # MII/PHY support (sometimes needed for USB Ethernet)
 CONFIG_MII=y
 
+# Module decompression in kernel (allows loading .ko.xz without userspace support)
+CONFIG_MODULE_DECOMPRESS=y
+
+# NLS UTF-8 built-in (required for FAT boot partition mount with iocharset=utf8)
+CONFIG_NLS_UTF8=y
+
+# ============================================
+# RAUC OTA Update Requirements
+# ============================================
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_MD=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_VERITY=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_CRYPTO_SHA256=y
+
 # ============================================
 # Image Size Optimization
 # Disable unused subsystems (saves ~14MB of kernel modules)
-# Future needs preserved: RAUC (squashfs, dm-verity, loop), I2S MEMS mic
 # ============================================
 
 # --- Media/Camera subsystem (3.7MB, 384 modules) ---

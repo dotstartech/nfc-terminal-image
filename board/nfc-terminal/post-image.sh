@@ -35,6 +35,32 @@ if [ -d "${BINARIES_DIR}/custom-overlays" ]; then
     rm -rf "${BINARIES_DIR}/custom-overlays"
 fi
 
+# ============================================
+# RAUC A/B Partition Setup
+# ============================================
+
+# Create initial boot state file for the boot partition
+cat > "${BINARIES_DIR}/boot.ini" << 'BOOTINI'
+PRIMARY="A"
+A_OK=1
+A_ATTEMPTS=3
+B_OK=0
+B_ATTEMPTS=0
+BOOTINI
+
+# Create empty rootfs_b partition image (will be populated by first OTA update)
+ROOTFS_SIZE=$(stat -c%s "${BINARIES_DIR}/rootfs.ext2")
+rm -f "${BINARIES_DIR}/rootfs_b.ext4"
+truncate -s ${ROOTFS_SIZE} "${BINARIES_DIR}/rootfs_b.ext4"
+${HOST_DIR}/sbin/mkfs.ext4 -q -L "rootfs_b" "${BINARIES_DIR}/rootfs_b.ext4"
+
+# Create empty data partition image (16MB for RAUC status and persistent data)
+rm -f "${BINARIES_DIR}/data.ext4"
+truncate -s 16M "${BINARIES_DIR}/data.ext4"
+${HOST_DIR}/sbin/mkfs.ext4 -q -L "data" "${BINARIES_DIR}/data.ext4"
+
+# ============================================
+
 # Create empty rootpath for genimage
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 ROOTPATH_TMP="$(mktemp -d)"
