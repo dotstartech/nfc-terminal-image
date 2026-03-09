@@ -385,23 +385,21 @@ The image supports the [Adafruit I2S MEMS Microphone Breakout](https://www.adafr
 
 ### Recording
 
-List capture devices:
+The microphone captures audio at 24 kHz / 16-bit mono WAV (~2.9 MB/min, a 4× reduction vs. the native 48 kHz / 32-bit format). Recording starts automatically when roles are checked in and stops when all roles go idle. Files are saved to `/tmp/recording.wav`.
+
+Record manually from the command line:
 
 ```bash
-arecord -l
-```
-
-Record a mono WAV file (adjust card number from `arecord -l` output):
-
-```bash
-arecord -D plughw:2 -c1 -r 48000 -f S32_LE -t wav -V mono -v test.wav
+arecord -D dmic -c1 -r 24000 -f S16_LE -t wav -V mono -v recording.wav
 ```
 
 Stop recording with `Ctrl+C`. Copy the file to your host:
 
 ```bash
-scp -O root@<device-ip>:/root/test.wav .
+scp -O root@<device-ip>:/tmp/recording.wav .
 ```
+
+> **Tip:** For significantly smaller files, a future update will stream audio over MQTT using the Opus codec (`BR2_PACKAGE_OPUS`). Opus at 24 kbps produces voice-quality files at ~3 KB/s (~180 KB/min) — a 60× reduction over raw WAV.
 
 ## OTA Updates (RAUC)
 

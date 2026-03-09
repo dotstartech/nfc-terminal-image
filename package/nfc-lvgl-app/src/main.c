@@ -1068,6 +1068,9 @@ static void apply_theme(void) {
     if (g_header_nfc_status) {
         lv_obj_set_style_bg_color(g_header_nfc_status, THEME_HEADER, LV_PART_MAIN);
     }
+    if (g_header_mic_status) {
+        lv_obj_set_style_bg_color(g_header_mic_status, THEME_HEADER, LV_PART_MAIN);
+    }
     
     /* Settings modal */
     if (g_settings_modal) {
@@ -2976,7 +2979,9 @@ int main(int argc, char *argv[]) {
                         /* Child: redirect stdout/stderr to /dev/null */
                         int devnull = open("/dev/null", O_WRONLY);
                         if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                        execlp("arecord", "arecord", "-D", "dmic", "-c1", "-r", "48000", "-f", "S32_LE", "-t", "wav", "/tmp/recording.wav", (char *)NULL);
+                        execlp("arecord", "arecord", "-D", "dmic", "-c1",
+                            "-r", "24000", "-f", "S16_LE", "-t", "wav",
+                            "/tmp/recording.wav", (char *)NULL);
                         _exit(127);
                     } else if (pid > 0) {
                         g_arecord_pid = pid;

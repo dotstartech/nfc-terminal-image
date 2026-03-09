@@ -88,11 +88,17 @@ pcm.dmic_sv {
 }
 
 # Mono capture - extracts left channel from stereo I2S stream
-pcm.dmic {
+pcm.dmic_raw {
     type route
     slave.pcm dmic_sv
     slave.channels 2
     ttable.0.0 1
+}
+
+# Plug wrapper - allows any format/rate, converts automatically to hw params
+pcm.dmic {
+    type plug
+    slave.pcm dmic_raw
 }
 EOF
 
