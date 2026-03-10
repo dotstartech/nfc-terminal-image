@@ -10,8 +10,8 @@ arm_64bit=1
 kernel=Image
 device_tree=bcm2711-rpi-cm4.dtb
 
-# GPU memory allocation
-gpu_mem=256
+# GPU memory allocation (KMS/DRM uses CMA, not firmware GPU memory)
+gpu_mem=32
 
 # Enable serial console for debugging
 enable_uart=1
@@ -31,6 +31,9 @@ dtoverlay=nfc-pn7150
 
 dtparam=audio=off
 
+# I2S interface (required for Adafruit I2S MEMS Microphone)
+dtparam=i2s=on
+
 # USB mode for CM4 on IO board
 otg_mode=1
 
@@ -47,3 +50,10 @@ dtoverlay=st7703-gx040hd
 
 # FT6336U Touch Controller on I2C0
 dtoverlay=ft6336u-gx040hd
+
+# Adafruit I2S MEMS Microphone (SPH0645LM4H)
+# Uses the Google VoiceHAT soundcard driver via I2S
+dtoverlay=googlevoicehat-soundcard
+
+# Enable hardware watchdog (required for reboot to work)
+dtparam=watchdog=on

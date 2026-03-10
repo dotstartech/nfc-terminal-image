@@ -12,3 +12,6 @@ package/nfc-lvgl-app/src/lvgl/
 *.swp
 *.tmp
 *~
+
+# RAUC development certificates (private keys must not be committed)
+board/nfc-terminal/rauc/certs/
