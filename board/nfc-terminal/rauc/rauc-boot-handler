@@ -72,6 +72,10 @@ case "$1" in
         ;;
 
     set-primary)
+        case "$2" in
+            A|B) ;;
+            *) echo "Invalid slot '$2'; expected A or B" >&2; exit 1 ;;
+        esac
         ensure_mounted
         read_state
         PRIMARY="$2"

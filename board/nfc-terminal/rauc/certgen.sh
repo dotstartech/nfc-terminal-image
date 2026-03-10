@@ -15,6 +15,7 @@
 #   ./certgen.sh --force    # Regenerate (overwrite existing)
 
 set -e
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CERT_DIR="${SCRIPT_DIR}/certs"
