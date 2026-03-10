@@ -13,7 +13,7 @@ BOOT_MOUNT="/boot"
 BOOT_DEV="/dev/mmcblk0p1"
 BOOT_STATE="${BOOT_MOUNT}/boot.ini"
 CMDLINE="${BOOT_MOUNT}/cmdline.txt"
-CMDLINE_OPTS="rootwait console=ttyAMA0,115200 quiet loglevel=0 vt.global_cursor_default=0"
+CMDLINE_OPTS="rootwait console=ttyAMA0,115200 quiet loglevel=0 vt.global_cursor_default=0 cma=32M"
 
 ensure_mounted() {
     if ! mountpoint -q "$BOOT_MOUNT"; then

@@ -126,27 +126,30 @@ BOOST_PCT=85
 
 case "$1" in
   start)
-        # Wait for sound card (max 5 seconds)
-        count=0
-        while ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD" && [ $count -lt 50 ]; do
-            usleep 100000
-            count=$((count + 1))
-        done
+        # Run in background to avoid blocking boot — mic is not needed immediately
+        (
+            # Wait for sound card (max 5 seconds)
+            count=0
+            while ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD" && [ $count -lt 50 ]; do
+                usleep 100000
+                count=$((count + 1))
+            done
 
-        if ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD"; then
-            echo "Mic: sound card $CARD not found, skipping"
-            exit 0
-        fi
+            if ! cat /proc/asound/cards 2>/dev/null | grep -q "$CARD"; then
+                echo "Mic: sound card $CARD not found, skipping"
+                exit 0
+            fi
 
-        # Brief dummy capture to create the softvol control
-        arecord -D dmic_sv -c2 -r 48000 -f S32_LE -d 1 /dev/null >/dev/null 2>&1
+            # Brief dummy capture to create the softvol control
+            arecord -D dmic_sv -c2 -r 48000 -f S32_LE -d 1 /dev/null >/dev/null 2>&1
 
-        # Set boost level
-        if amixer -c "$CARD" cset numid=1 "${BOOST_PCT}%" >/dev/null 2>&1; then
-            echo "Mic: boost set to ${BOOST_PCT}%"
-        else
-            echo "Mic: failed to set boost level"
-        fi
+            # Set boost level
+            if amixer -c "$CARD" cset numid=1 "${BOOST_PCT}%" >/dev/null 2>&1; then
+                echo "Mic: boost set to ${BOOST_PCT}%"
+            else
+                echo "Mic: failed to set boost level"
+            fi
+        ) &
         ;;
   stop)
         ;;
@@ -271,39 +274,9 @@ exit 0
 HWCLOCKEOF
 chmod 755 ${TARGET_DIR}/etc/init.d/S12hwclock
 
-# Create early boot script to run depmod and load display modules
-# This runs before S10udev to ensure modules are available
-cat > ${TARGET_DIR}/etc/init.d/S01depmod << 'INITEOF'
-#!/bin/sh
-#
-# S01depmod - Run depmod to generate modules.dep and load display modules
-#
-
-case "$1" in
-  start)
-        echo "Running depmod..."
-        KVER=$(uname -r)
-        /sbin/depmod -a "$KVER" 2>/dev/null || true
-        
-        echo "Loading display modules..."
-        # Load VC4 graphics driver (required for DSI display)
-        modprobe drm 2>/dev/null || true
-        modprobe vc4 2>/dev/null || true
-        # Load panel driver
-        modprobe panel-sitronix-st7703-gx040hd 2>/dev/null || true
-        # Load touchscreen driver
-        modprobe edt_ft5x06 2>/dev/null || true
-        ;;
-  stop)
-        ;;
-  *)
-        echo "Usage: $0 {start|stop}"
-        exit 1
-esac
-
-exit 0
-INITEOF
-chmod 755 ${TARGET_DIR}/etc/init.d/S01depmod
+# S01depmod removed — depmod runs at build time (below) and display modules
+# are loaded by S11modules via modules-load.d/display.conf + udev modalias.
+rm -f ${TARGET_DIR}/etc/init.d/S01depmod
 
 # Set hostname to MAC address of the first Ethernet interface (lowercase, no colons)
 # Runs as S02 (after S01depmod, before S10udev/S40network) so udhcpc sends it
@@ -466,12 +439,10 @@ iface lo inet loopback
 # Native Ethernet (official IO Board)
 auto eth0
 iface eth0 inet dhcp
-    pre-up sleep 2
 
 # USB Ethernet - usb0 naming (common for USB NICs)
 auto usb0
 iface usb0 inet dhcp
-    pre-up sleep 3
 
 # Allow hotplug for any additional interfaces
 allow-hotplug eth1
@@ -502,57 +473,17 @@ mkdir -p ${TARGET_DIR}/etc/init.d
 cat > ${TARGET_DIR}/etc/init.d/S99boot-complete << 'EOF'
 #!/bin/sh
 #
-# Boot complete indicator - blinks ACT LED to show Linux has booted
+# Boot complete indicator - set ACT LED to heartbeat
 #
 
 case "$1" in
   start)
-        echo "Boot complete - signaling via LED"
         # Set ACT LED to heartbeat to indicate system is running
         if [ -e /sys/class/leds/ACT/trigger ]; then
             echo heartbeat > /sys/class/leds/ACT/trigger
         elif [ -e /sys/class/leds/led0/trigger ]; then
             echo heartbeat > /sys/class/leds/led0/trigger
         fi
-        
-        # Wait for network interfaces to appear and log debug info
-        echo "=== Network Debug Info ===" > /var/log/boot-network.log
-        echo "Date: $(date)" >> /var/log/boot-network.log
-        echo "" >> /var/log/boot-network.log
-        
-        echo "=== Loaded Modules ===" >> /var/log/boot-network.log
-        lsmod | grep -E "smsc|usb|net" >> /var/log/boot-network.log 2>&1
-        echo "" >> /var/log/boot-network.log
-        
-        echo "=== USB Devices ===" >> /var/log/boot-network.log
-        lsusb >> /var/log/boot-network.log 2>&1 || cat /sys/bus/usb/devices/*/product >> /var/log/boot-network.log 2>&1
-        echo "" >> /var/log/boot-network.log
-        
-        echo "=== Network Interfaces ===" >> /var/log/boot-network.log
-        ip link >> /var/log/boot-network.log 2>&1
-        echo "" >> /var/log/boot-network.log
-        
-        echo "=== IP Addresses ===" >> /var/log/boot-network.log
-        ip addr >> /var/log/boot-network.log 2>&1
-        echo "" >> /var/log/boot-network.log
-        
-        echo "=== Trying to bring up any down interfaces ===" >> /var/log/boot-network.log
-        for iface in /sys/class/net/*; do
-            iface_name=$(basename $iface)
-            if [ "$iface_name" != "lo" ]; then
-                echo "Checking $iface_name..." >> /var/log/boot-network.log
-                ip link set "$iface_name" up 2>> /var/log/boot-network.log
-                udhcpc -i "$iface_name" -n -q -t 5 >> /var/log/boot-network.log 2>&1 &
-            fi
-        done
-        
-        # Wait a bit for DHCP
-        sleep 10
-        
-        echo "=== Final Network Status ===" >> /var/log/boot-network.log
-        ip addr >> /var/log/boot-network.log 2>&1
-        
-        echo "Network debug info logged to /var/log/boot-network.log"
         ;;
   stop)
         ;;

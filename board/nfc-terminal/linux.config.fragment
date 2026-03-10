@@ -45,22 +45,19 @@ CONFIG_LOGO_LINUX_CLUT224=y
 # CONFIG_CFG80211 is not set
 # CONFIG_MAC80211 is not set
 
-# VirtIO drivers for QEMU testing
-CONFIG_VIRTIO=y
-CONFIG_VIRTIO_PCI=y
-CONFIG_VIRTIO_MMIO=y
-CONFIG_VIRTIO_BLK=y
-CONFIG_VIRTIO_NET=y
-CONFIG_VIRTIO_CONSOLE=y
-CONFIG_HW_RANDOM_VIRTIO=y
+# VirtIO/QEMU drivers removed for production (saves kernel size and init time)
+# CONFIG_VIRTIO is not set
+# CONFIG_VIRTIO_PCI is not set
+# CONFIG_VIRTIO_MMIO is not set
+# CONFIG_VIRTIO_BLK is not set
+# CONFIG_VIRTIO_NET is not set
+# CONFIG_VIRTIO_CONSOLE is not set
+# CONFIG_HW_RANDOM_VIRTIO is not set
+# CONFIG_PCI_HOST_GENERIC is not set
 
-# PCI host controller for QEMU virt machine
-CONFIG_PCI_HOST_GENERIC=y
-
-# Required for proper boot debugging
-CONFIG_EARLY_PRINTK=y
-CONFIG_DEBUG_LL=y
-CONFIG_DEBUG_LL_UART_PL011=y
+# Debug options disabled for production
+# CONFIG_EARLY_PRINTK is not set
+# CONFIG_DEBUG_LL is not set
 
 # USB Host Controller Support
 CONFIG_USB=y

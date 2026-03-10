@@ -10,8 +10,8 @@ arm_64bit=1
 kernel=Image
 device_tree=bcm2711-rpi-cm4.dtb
 
-# GPU memory allocation
-gpu_mem=256
+# GPU memory allocation (KMS/DRM uses CMA, not firmware GPU memory)
+gpu_mem=32
 
 # Enable serial console for debugging
 enable_uart=1
