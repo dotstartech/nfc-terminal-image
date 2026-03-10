@@ -6,14 +6,24 @@ set -e
 
 BOARD_DIR="$(dirname $0)"
 
-# Configure tty1 to run nfcDemoApp instead of getty
-# This displays NFC polling output on the screen
+# Configure inittab: NFC app on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
-    # Remove default tty1 getty entry
+    # Remove default tty1 getty entry and any previous NFC lines
     sed -i '/^tty1::/d' ${TARGET_DIR}/etc/inittab
+    sed -i '/^# NFC Demo App/d' ${TARGET_DIR}/etc/inittab
     # Comment out other tty entries
     sed -i 's/^tty\([2-9]\)::/#tty\1::/' ${TARGET_DIR}/etc/inittab
-    # Add nfcDemoApp on tty1 with respawn
+    # Collapse multiple consecutive blank lines into one
+    sed -i '/^$/N;/^\n$/d' ${TARGET_DIR}/etc/inittab
+
+    # RPi CM4 without PSCI: the reboot() syscall doesn't restart the SoC.
+    # Insert sysrq-b (kernel emergency restart) AFTER swapoff but BEFORE
+    # umount — /proc must still be mounted for the write to succeed.
+    sed -i '/^::shutdown:\/bin\/sh.*sysrq/d' ${TARGET_DIR}/etc/inittab
+    sed -i '/^::shutdown:\/sbin\/swapoff/a\
+::shutdown:/bin/sh -c '"'"'sync; echo b > /proc/sysrq-trigger'"'"'' ${TARGET_DIR}/etc/inittab
+
+    # Add NFC Demo App on tty1 with respawn
     echo '' >> ${TARGET_DIR}/etc/inittab
     echo '# NFC Demo App on display (respawns if exits)' >> ${TARGET_DIR}/etc/inittab
     echo 'tty1::respawn:/usr/bin/nfc-console' >> ${TARGET_DIR}/etc/inittab
@@ -345,6 +355,26 @@ esac
 exit 0
 HOSTEOF
 chmod 755 ${TARGET_DIR}/etc/init.d/S02hostname
+
+# Reboot safety guard — catches hangs during the shutdown sequence.
+# rcK runs init scripts in reverse order, so S99zz runs FIRST during shutdown.
+# It backgrounds a subshell that forces a kernel-level reboot (sysrq-b)
+# after 15 seconds if the orderly shutdown gets stuck in rcK/swapoff/umount.
+# The subshell traps SIGTERM so init's kill(-1, SIGTERM) can't stop it.
+# Note: sysrq-b is used instead of 'reboot -f' because the RPi CM4 without
+# PSCI fails to restart via the reboot() syscall after orderly shutdown.
+cat > ${TARGET_DIR}/etc/init.d/S99zz-reboot-guard << 'GUARDEOF'
+#!/bin/sh
+case "$1" in
+  start)
+        ;;
+  stop)
+        (trap '' TERM; sleep 15; sync; echo b > /proc/sysrq-trigger) &
+        ;;
+esac
+exit 0
+GUARDEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S99zz-reboot-guard
 
 # Copy boot splash logo to target
 mkdir -p ${TARGET_DIR}/usr/share/images
