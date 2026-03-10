@@ -22,6 +22,7 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 - RAUC OTA updates with A/B rootfs partition scheme
 - I2C interface enabled (I2C0 and I2C1)
 - USB Ethernet (smsc95xx for PoE backplate)
+- MAC-based hostname (device reachable by MAC address on local network)
 
 ## Directory Structure
 
@@ -385,7 +386,7 @@ The image supports the [Adafruit I2S MEMS Microphone Breakout](https://www.adafr
 
 ### Recording
 
-The microphone captures audio at 24 kHz / 16-bit mono WAV (~2.9 MB/min, a 4× reduction vs. the native 48 kHz / 32-bit format). Recording starts automatically when roles are checked in and stops when all roles go idle. Files are saved to `/tmp/recording.wav`.
+The microphone captures audio at 24 kHz / 16-bit mono WAV (~2.9 MB/min, a 4× reduction vs. the native 48 kHz / 32-bit format). Recording starts automatically when roles are checked in and stops when all roles go idle. Files are named `<TAGID>-YYYYMMDDTHHMMSS.wav` (e.g. `04a23b1c2d3e4f-20260310T143022.wav`) and saved to `/tmp/`.
 
 Record manually from the command line:
 
@@ -396,7 +397,7 @@ arecord -D dmic -c1 -r 24000 -f S16_LE -t wav -V mono -v recording.wav
 Stop recording with `Ctrl+C`. Copy the file to your host:
 
 ```bash
-scp -O root@<device-ip>:/tmp/recording.wav .
+scp -O root@<device-ip>:/tmp/*.wav .
 ```
 
 > **Tip:** For significantly smaller files, a future update will stream audio over MQTT using the Opus codec (`BR2_PACKAGE_OPUS`). Opus at 24 kbps produces voice-quality files at ~3 KB/s (~180 KB/min) — a 60× reduction over raw WAV.
@@ -448,6 +449,9 @@ compatible=nfc-terminal-cm4
 bootloader=custom
 statusfile=/data/rauc.status
 bundle-formats=-plain
+
+[keyring]
+path=/etc/rauc/ca.cert.pem
 
 [handlers]
 bootloader-custom-backend=/usr/lib/rauc/rauc-boot-handler
@@ -516,6 +520,9 @@ cat > /tmp/rauc-bundle/manifest.raucm << 'EOF'
 [update]
 compatible=nfc-terminal-cm4
 version=1.0.0
+
+[bundle]
+format=verity
 
 [image.rootfs]
 filename=rootfs.ext4

@@ -295,6 +295,57 @@ exit 0
 INITEOF
 chmod 755 ${TARGET_DIR}/etc/init.d/S01depmod
 
+# Set hostname to MAC address of the first Ethernet interface (lowercase, no colons)
+# Runs as S02 (after S01depmod, before S10udev/S40network) so udhcpc sends it
+# to the DHCP server, making the device reachable by hostname on the local network.
+cat > ${TARGET_DIR}/etc/init.d/S02hostname << 'HOSTEOF'
+#!/bin/sh
+#
+# S02hostname - Set hostname from Ethernet MAC address
+#
+
+case "$1" in
+  start)
+        # Find first Ethernet interface with a MAC address
+        MAC=""
+        for iface in /sys/class/net/eth* /sys/class/net/usb* /sys/class/net/enx*; do
+            if [ -f "$iface/address" ]; then
+                MAC=$(cat "$iface/address" 2>/dev/null)
+                if [ -n "$MAC" ] && [ "$MAC" != "00:00:00:00:00:00" ]; then
+                    break
+                fi
+                MAC=""
+            fi
+        done
+
+        if [ -z "$MAC" ]; then
+            echo "Hostname: no MAC found, keeping default"
+            exit 0
+        fi
+
+        # Strip colons and lowercase: d8:3a:dd:90:cd:79 -> d83add90cd79
+        NEWHOST=$(echo "$MAC" | tr -d ':' | tr 'A-F' 'a-f')
+
+        hostname "$NEWHOST"
+        echo "$NEWHOST" > /etc/hostname
+        # Update /etc/hosts so local lookups work
+        sed -i "s/127.0.1.1.*/127.0.0.1\t$NEWHOST/" /etc/hosts 2>/dev/null
+        if ! grep -q "$NEWHOST" /etc/hosts; then
+            echo "127.0.0.1\t$NEWHOST" >> /etc/hosts
+        fi
+        echo "Hostname: $NEWHOST"
+        ;;
+  stop)
+        ;;
+  *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
+
+exit 0
+HOSTEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S02hostname
+
 # Copy boot splash logo to target
 mkdir -p ${TARGET_DIR}/usr/share/images
 cp ${BOARD_DIR}/logo-mid.png ${TARGET_DIR}/usr/share/images/splash.png

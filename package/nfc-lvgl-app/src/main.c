@@ -2974,6 +2974,34 @@ int main(int argc, char *argv[]) {
 
                 /* Start/stop recording based on check-in state */
                 if (any_checked_in && g_arecord_pid == -1) {
+                    /* Build filename: <tag_id_no_colons_lc>-YYYYMMDDTHHMMSS.wav */
+                    char rec_path[256];
+                    {
+                        /* Find first checked-in role's tag_id */
+                        const char *src_tag = "unknown";
+                        for (int i = 0; i < NUM_ROLES; i++) {
+                            if (g_roles[i].state == ROLE_STATE_CHECKED_IN && g_roles[i].tag_id[0]) {
+                                src_tag = g_roles[i].tag_id;
+                                break;
+                            }
+                        }
+                        /* Strip colons and lowercase */
+                        char tag_clean[128];
+                        int tp = 0;
+                        for (const char *p = src_tag; *p && tp < (int)sizeof(tag_clean) - 1; p++) {
+                            if (*p != ':') {
+                                tag_clean[tp++] = (*p >= 'A' && *p <= 'F') ? (*p + 32) : *p;
+                            }
+                        }
+                        tag_clean[tp] = '\0';
+                        /* Timestamp */
+                        time_t now = time(NULL);
+                        struct tm tm;
+                        localtime_r(&now, &tm);
+                        char ts[32];
+                        strftime(ts, sizeof(ts), "%Y%m%dT%H%M%S", &tm);
+                        snprintf(rec_path, sizeof(rec_path), "/tmp/%s-%s.wav", tag_clean, ts);
+                    }
                     pid_t pid = fork();
                     if (pid == 0) {
                         /* Child: redirect stdout/stderr to /dev/null */
@@ -2981,11 +3009,11 @@ int main(int argc, char *argv[]) {
                         if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
                         execlp("arecord", "arecord", "-D", "dmic", "-c1",
                             "-r", "24000", "-f", "S16_LE", "-t", "wav",
-                            "/tmp/recording.wav", (char *)NULL);
+                            rec_path, (char *)NULL);
                         _exit(127);
                     } else if (pid > 0) {
                         g_arecord_pid = pid;
-                        LOG("MIC: Recording started (pid=%d)\n", pid);
+                        LOG("MIC: Recording started (pid=%d) -> %s\n", pid, rec_path);
                     } else {
                         LOG("MIC: fork() failed: %s\n", strerror(errno));
                     }
