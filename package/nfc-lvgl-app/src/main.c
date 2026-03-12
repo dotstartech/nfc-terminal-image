@@ -56,12 +56,11 @@ LV_IMAGE_DECLARE(logo_small);
 #define DISPLAY_WIDTH   720
 #define DISPLAY_HEIGHT  720
 #define FB_DEVICE       "/dev/fb0"
-#define TOUCH_DEVICE    "/dev/input/event4"
 
-#define MQTT_ADDRESS    "tcp://192.168.188.50:1883"
-#define MQTT_CLIENT_ID  "nfc-terminal"
-#define MQTT_USERNAME   "admin"
-#define MQTT_PASSWORD   "admin"
+#define MQTT_ADDRESS    "mqbase.io"
+#define MQTT_CLIENT_ID  "nfc-term"
+#define MQTT_USERNAME   "guest"
+#define MQTT_PASSWORD   "guest"
 #define MQTT_QOS        2
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
@@ -346,7 +345,7 @@ static MQTTAsync g_mqtt_client = NULL;
 static volatile int g_mqtt_connected = 0;
 static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static char g_device_mac[18] = "";  /* MAC address in format "AA:BB:CC:DD:EE:FF" */
+static char g_device_mac[13] = "";  /* MAC address in format "AABBCCDDEEFF" */
 static char g_mqtt_address[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
 static char g_mqtt_username[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
 static char g_mqtt_password[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
@@ -580,9 +579,23 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 }
 
 static int touch_init(void) {
-    g_touch_fd = open(TOUCH_DEVICE, O_RDONLY | O_NONBLOCK);
+    /* Scan /dev/input/eventN for a direct touchscreen (INPUT_PROP_DIRECT) */
+    char path[32];
+    for (int i = 0; i < 10; i++) {
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        unsigned long prop_bits = 0;
+        if (ioctl(fd, EVIOCGPROP(sizeof(prop_bits)), &prop_bits) >= 0 &&
+            (prop_bits & (1 << INPUT_PROP_DIRECT))) {
+            g_touch_fd = fd;
+            LOG("Touch device found: %s\n", path);
+            break;
+        }
+        close(fd);
+    }
     if (g_touch_fd < 0) {
-        perror("Cannot open touch device");
+        LOG("Cannot find touch device\n");
         return -1;
     }
 
@@ -2379,20 +2392,19 @@ static void mqtt_on_connected(void *context, char *cause) {
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    LOG("MQTT: Connected (cause: %s), publishing state ON\n", cause ? cause : "initial");
-    
-    /* Publish online state - called on both initial connect and reconnect */
+    LOG("MQTT: Connected (cause: %s), publishing state=on\n", cause ? cause : "initial");
+
     if (!g_mqtt_client) {
-        LOG("MQTT: Client is NULL, cannot publish state\n");
+        LOG("MQTT: Client is NULL, cannot publish state=on\n");
         return;
     }
     
     char *payload = malloc(32);
     if (!payload) {
-        LOG("MQTT: Failed to allocate payload for state ON\n");
+        LOG("MQTT: Failed to allocate payload for state=on\n");
         return;
     }
-    snprintf(payload, 32, "{\"state\":\"ON\"}");
+    snprintf(payload, 32, "{\"state\":\"on\"}");
     
     MQTTAsync_message msg = MQTTAsync_message_initializer;
     msg.payload = payload;
@@ -2400,14 +2412,14 @@ static void mqtt_on_connected(void *context, char *cause) {
     msg.qos = MQTT_QOS;
     msg.retained = 1;
     
-    LOG("MQTT: Publishing state ON to %s\n", g_mqtt_state_topic);
+    LOG("MQTT: Publishing state=on to %s\n", g_mqtt_state_topic);
     
     MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
     int rc = MQTTAsync_sendMessage(g_mqtt_client, g_mqtt_state_topic, &msg, &resp);
     if (rc != MQTTASYNC_SUCCESS) {
-        LOG("MQTT: Failed to queue state ON, rc=%d\n", rc);
+        LOG("MQTT: Failed to queue state=on, rc=%d\n", rc);
     } else {
-        LOG("MQTT: State ON queued for publish\n");
+        LOG("MQTT: State=on queued for publish\n");
     }
     /* Paho copies the payload internally, safe to free now */
     free(payload);
@@ -2465,11 +2477,16 @@ static int mqtt_init(void) {
 
     LOG("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
 
-    /* Generate unique client ID by appending random 8-digit suffix */
     char client_id[64];
-    srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
-    snprintf(client_id, sizeof(client_id), "%s-%08X", MQTT_CLIENT_ID,
+    if(g_device_mac == NULL) {
+        LOG("MQTT: Device MAC not available, use random client ID to initialize MQTT client\n");
+        srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
+        snprintf(client_id, sizeof(client_id), "%s-%08X", MQTT_CLIENT_ID,
              (unsigned int)(rand() & 0xFFFFFFFF));
+    } else {
+        LOG("MQTT: Device MAC available, use it to initialize MQTT client\n");
+        snprintf(client_id, sizeof(client_id), "%s-%s", MQTT_CLIENT_ID, g_device_mac);
+    }
 
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
@@ -2494,7 +2511,7 @@ static int mqtt_init(void) {
 
     /* Configure Last Will and Testament (LWT) */
     will_opts.topicName = g_mqtt_state_topic;
-    will_opts.message = "{\"state\":\"OFF\"}";
+    will_opts.message = "{\"state\":\"off\"}";
     will_opts.qos = MQTT_QOS;
     will_opts.retained = 1;
 
@@ -2550,7 +2567,7 @@ static void mqtt_deinit(void) {
         
         /* Publish offline state before disconnect if currently connected */
         if (connected) {
-            mqtt_publish_state("OFF");
+            mqtt_publish_state("off");
             /* Brief delay to allow async OFF message to be sent before disconnect */
             usleep(200000);  /* 200ms */
         }
@@ -2609,16 +2626,12 @@ static void get_mac_address(void) {
     }
 
 found:
-    snprintf(g_device_mac, sizeof(g_device_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+    snprintf(g_device_mac, sizeof(g_device_mac), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     /* Build MQTT topics: data/<MAC_NO_COLONS>/nfc and data/<MAC_NO_COLONS>/state */
-    snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%02X%02X%02X%02X%02X%02X/nfc",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%02X%02X%02X%02X%02X%02X/state",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    
-    LOG("MQTT: State topic: %s\n", g_mqtt_state_topic);
+    snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%s/nfc", g_device_mac);
+    snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%s/state", g_device_mac);
 }
 
 /* Publish check-in/check-out state change to data/<TAG-ID> */
@@ -2643,7 +2656,7 @@ static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in) {
     snprintf(topic, sizeof(topic), "data/%s", tag_no_colons);
 
     /* Build JSON payload */
-    const char *payload = checked_in ? "{\"state\":\"IN\"}" : "{\"state\":\"OUT\"}";
+    const char *payload = checked_in ? "{\"state\":\"in\"}" : "{\"state\":\"out\"}";
 
     MQTTAsync_message msg = MQTTAsync_message_initializer;
     msg.payload = (void *)payload;

@@ -28,32 +28,48 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 
 ```
 nfc-terminal-image/
-├── buildroot/                 # Buildroot source (cloned)
+├── buildroot/                 # Buildroot source (submodule, 2026.02.x)
 ├── board/nfc-terminal/        # Board-specific files
-│   ├── config.txt             # Boot configuration
+│   ├── config.txt             # Raspberry Pi boot configuration
 │   ├── cmdline.txt            # Kernel command line
-│   ├── genimage.cfg           # Image generation config (A/B layout)
+│   ├── genimage.cfg           # Disk image layout (A/B partitions)
 │   ├── linux.config.fragment  # Kernel config additions
+│   ├── logo-mid.png           # Boot splash image
+│   ├── nfc-diag.sh            # NFC diagnostics script
 │   ├── overlays/              # Device tree overlays
 │   │   └── nfc-pn7150.dts     # NFC PN7150 overlay
-│   ├── rauc/                  # RAUC OTA configuration
+│   ├── rauc/                  # RAUC OTA update configuration
 │   │   ├── system.conf        # RAUC system config (slots, bootloader)
-│   │   ├── rauc-boot-handler  # Custom bootloader backend script
+│   │   ├── rauc-boot-handler  # Custom A/B bootloader backend script
 │   │   ├── certgen.sh         # Development certificate generator
-│   │   └── certs/             # Generated certs (gitignored)
-│   ├── post-build.sh          # Post-build customization
+│   │   └── certs/             # Signing certificates (dev only)
+│   ├── post-build.sh          # Post-build rootfs customization
 │   └── post-image.sh          # Image generation script
 ├── configs/                   # Buildroot defconfigs
 │   └── nfc_terminal_cm4_defconfig
 ├── docs/                      # Reference documentation
 │   └── AN11697.pdf            # NXP PN7150 Linux integration guide
-├── package/                   # Custom packages
-│   ├── libnfc-nci/            # NFC userspace library
-│   ├── pn5xx-i2c/             # NFC kernel driver (patched)
-│   └── st7703-gx040hd/        # Display driver package
+├── external/                  # Buildroot external tree hooks
+├── package/                   # Custom Buildroot packages
+│   ├── libnfc-nci/            # NFC userspace library (NXP)
+│   ├── nfc-lvgl-app/          # LVGL touchscreen UI application
+│   │   ├── src/               # Application source (C, LVGL, fonts)
+│   │   ├── images/            # UI image assets
+│   │   └── nfc-console        # Init wrapper script
+│   ├── pn5xx-i2c/             # PN7150 NFC kernel driver (out-of-tree)
+│   └── st7703-gx040hd/        # ST7703 MIPI DSI panel driver package
+├── patches/                   # Buildroot package patches
+│   └── buildroot/
+│       └── 0001-paho-mqtt-c-enable-MQTT5.patch
+├── .github/
+│   ├── instructions/          # Copilot agent instructions
+│   └── workflows/build.yml    # CI build workflow
+├── build.sh                   # Main build script
 ├── external.desc              # External tree descriptor
 ├── external.mk                # External tree makefile
 ├── Config.in                  # External tree Kconfig
+├── ROADMAP.md                 # Future development plans
+├── LICENSE                    # Project license
 └── README.md                  # This file
 ```
 
@@ -175,20 +191,29 @@ ssh -p 2222 root@localhost
 
 ## Configuration
 
-Key display, I2C, and peripheral settings in `/boot/config.txt`:
+Key display, I2C, I2S and peripheral settings in `/boot/config.txt`:
 
 ```ini
+# I2C
+dtparam=i2c_arm=on    # I2C1 (GPIO 2/3) - RTC, NFC
+dtparam=i2c_vc=on     # I2C0 (GPIO 0/1) - Touch controller
+
+# I2S
+dtparam=i2s=on
+
 # Display
 dtoverlay=vc4-kms-v3d
 dtoverlay=st7703-gx040hd
 dtoverlay=ft6336u-gx040hd
 
-# I2C
-dtparam=i2c_arm=on    # I2C1 (GPIO 2/3) - RTC, NFC
-dtparam=i2c_vc=on     # I2C0 (GPIO 0/1) - Touch controller
-
-# RTC
+# DS3231 RTC on I2C1
 dtoverlay=i2c-rtc,ds3231
+
+# PN7150 NFC on I2C1 with kernel driver
+dtoverlay=nfc-pn7150
+
+# SPH0645LM4H mic uses the Google VoiceHAT soundcard driver via I2S
+dtoverlay=googlevoicehat-soundcard
 ```
 
 ### I2C Bus Usage
@@ -339,8 +364,8 @@ The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operatio
 
 | Parameter | Value |
 |-----------|-------|
-| Broker | tcp://192.168.188.50:1883 |
-| Client ID | nfc-terminal |
+| Broker | mqbase.io |
+| Client ID | nfc-term-<MAC>/<RANDOM> |
 | Protocol | MQTT 5.0 (async) |
 | QoS | 2 |
 | Auto-Reconnect | Enabled (1-60s backoff) |
@@ -350,7 +375,7 @@ The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operatio
 | Topic | Description | Retained |
 |-------|-------------|----------|
 | `data/<MAC>/nfc` | NFC tag events (tagId, type) | No |
-| `data/<MAC>/state` | Device state (ON/OFF) | Yes |
+| `data/<MAC>/state` | Device state (on/off) | Yes |
 
 The `<MAC>` is the device's eth0 MAC address without colons (e.g., `DCDCA284B7C8`).
 
@@ -358,7 +383,7 @@ The `<MAC>` is the device's eth0 MAC address without colons (e.g., `DCDCA284B7C8
 
 On connection, the client registers an LWT message:
 - **Topic**: `data/<MAC>/state`
-- **Payload**: `{"state":"OFF"}`
+- **Payload**: `{"state":"off"}`
 - **Retained**: Yes
 
 This ensures the broker publishes the offline state if the device disconnects unexpectedly.
@@ -371,7 +396,7 @@ The async MQTT client automatically handles reconnection:
 - **Backoff**: Exponential between min and max
 - **Reconnection trigger**: Automatic on connection loss (no manual intervention required)
 
-When connection is restored, the client automatically publishes `{"state":"ON"}` to the state topic.
+When connection is restored, the client automatically publishes `{"state":"on"}` to the state topic.
 
 ## I2S MEMS Microphone (Adafruit SPH0645LM4H)
 
@@ -393,14 +418,6 @@ Record manually from the command line:
 ```bash
 arecord -D dmic -c1 -r 24000 -f S16_LE -t wav -V mono -v recording.wav
 ```
-
-Stop recording with `Ctrl+C`. Copy the file to your host:
-
-```bash
-scp -O root@<device-ip>:/tmp/*.wav .
-```
-
-> **Tip:** For significantly smaller files, a future update will stream audio over MQTT using the Opus codec (`BR2_PACKAGE_OPUS`). Opus at 24 kbps produces voice-quality files at ~3 KB/s (~180 KB/min) — a 60× reduction over raw WAV.
 
 ## OTA Updates (RAUC)
 
