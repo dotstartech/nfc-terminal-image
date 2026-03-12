@@ -601,4 +601,14 @@ exit 0
 RAUCEOF
 chmod 755 ${TARGET_DIR}/etc/init.d/S99rauc
 
+# ============================================
+# Include kernel, DTB, and overlays in rootfs
+# This allows RAUC OTA bundles to carry kernel updates
+# The boot handler copies these to the boot partition on slot switch
+# ============================================
+mkdir -p ${TARGET_DIR}/boot
+cp ${BINARIES_DIR}/Image ${TARGET_DIR}/boot/Image
+cp ${BINARIES_DIR}/bcm2711-rpi-cm4.dtb ${TARGET_DIR}/boot/
+cp -r ${BINARIES_DIR}/overlays ${TARGET_DIR}/boot/
+
 echo "NFC Terminal post-build completed"
