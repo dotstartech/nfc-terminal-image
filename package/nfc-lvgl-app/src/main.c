@@ -2478,7 +2478,7 @@ static int mqtt_init(void) {
     LOG("MQTT: mqtt_init() starting, state_topic=%s\n", g_mqtt_state_topic);
 
     char client_id[64];
-    if(g_device_mac == NULL) {
+    if(g_device_mac[0] == '\0') {
         LOG("MQTT: Device MAC not available, use random client ID to initialize MQTT client\n");
         srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
         snprintf(client_id, sizeof(client_id), "%s-%08X", MQTT_CLIENT_ID,
