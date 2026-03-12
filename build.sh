@@ -263,6 +263,7 @@ case "${1:-build}" in
         fi
         cd "${APP_DIR}"
         make -f Makefile.desktop -j$(nproc)
+        echo ""
         print_status "Desktop build complete!"
         print_status "Binary: ${APP_DIR}/desktop_build/nfc-lvgl-app-desktop"
         ;;

@@ -2,6 +2,14 @@
 
 Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carrier board [dotstartech/wall-panel](https://github.com/dotstartech/wall-panel) and [4 inch MIPI DSI LCD panel with ST7703 controller](https://github.com/dotstartech/st7703-gx040hd-driver)
 
+<p>
+  <img src="docs/nfc-lvgl-app-1.png" width="200" />
+  <img src="docs/nfc-lvgl-app-2.png" width="200" />
+  <img src="docs/nfc-lvgl-app-3.png" width="200" />
+  <img src="docs/nfc-lvgl-app-4.png" width="200" />
+  <img src="docs/nfc-lvgl-app-5.png" width="200" />
+</p>
+
 ## Target Hardware
 
 - **Board**: Raspberry Pi Compute Module 4 (**RAM**: 1GB, **Storage**: 8GB eMMC, **WiFi/BT**: None)
