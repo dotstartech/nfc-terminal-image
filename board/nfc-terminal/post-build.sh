@@ -606,9 +606,30 @@ chmod 755 ${TARGET_DIR}/etc/init.d/S99rauc
 # This allows RAUC OTA bundles to carry kernel updates
 # The boot handler copies these to the boot partition on slot switch
 # ============================================
-mkdir -p ${TARGET_DIR}/boot
+
+# rpi-firmware overlays needed by config.txt dtoverlay= lines
+# Note: vc4-kms-v3d-pi4.dtbo is required by vc4-kms-v3d.dtbo (resolved via overlay_map.dtb)
+RPI_OVERLAYS="i2c-rtc.dtbo dwc2.dtbo disable-bt.dtbo vc4-kms-v3d.dtbo vc4-kms-v3d-pi4.dtbo googlevoicehat-soundcard.dtbo"
+
+mkdir -p ${TARGET_DIR}/boot/overlays
+
+# Copy needed rpi-firmware overlays
+for dtbo in ${RPI_OVERLAYS}; do
+    if [ -f "${BINARIES_DIR}/rpi-firmware/overlays/${dtbo}" ]; then
+        cp "${BINARIES_DIR}/rpi-firmware/overlays/${dtbo}" "${TARGET_DIR}/boot/overlays/"
+    fi
+done
+# overlay_map.dtb is used by Pi firmware to resolve platform-specific overlays
+if [ -f "${BINARIES_DIR}/rpi-firmware/overlays/overlay_map.dtb" ]; then
+    cp "${BINARIES_DIR}/rpi-firmware/overlays/overlay_map.dtb" "${TARGET_DIR}/boot/overlays/"
+fi
+
+# Copy custom package overlays (nfc-pn7150, st7703-gx040hd, ft6336u-gx040hd)
+if [ -d "${BINARIES_DIR}/overlays" ]; then
+    cp -a "${BINARIES_DIR}/overlays/"*.dtbo "${TARGET_DIR}/boot/overlays/" 2>/dev/null || true
+fi
+
 cp ${BINARIES_DIR}/Image ${TARGET_DIR}/boot/Image
 cp ${BINARIES_DIR}/bcm2711-rpi-cm4.dtb ${TARGET_DIR}/boot/
-cp -r ${BINARIES_DIR}/overlays ${TARGET_DIR}/boot/
 
 echo "NFC Terminal post-build completed"
