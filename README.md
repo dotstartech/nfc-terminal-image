@@ -10,6 +10,7 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 - **Touch**: FocalTech FT6336U (I2C0 @ 0x48)
 - **NFC**: NXP PN7150 (I2C1 @ 0x28)
 - **RTC**: DS3231 (I2C1 @ 0x68)
+- **Microphone**: Adafruit I2S MEMS SPH0645LM4H
 
 ## Features
 
@@ -22,7 +23,6 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
 - RAUC OTA updates with A/B rootfs partition scheme
 - I2C interface enabled (I2C0 and I2C1)
 - USB Ethernet (smsc95xx for PoE backplate)
-- MAC-based hostname (device reachable by MAC address on local network)
 
 ## Directory Structure
 
