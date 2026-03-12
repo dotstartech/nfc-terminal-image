@@ -8,6 +8,7 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
   <img src="docs/nfc-lvgl-app-3.png" width="200" />
   <img src="docs/nfc-lvgl-app-4.png" width="200" />
   <img src="docs/nfc-lvgl-app-5.png" width="200" />
+  <img src="docs/nfc-lvgl-app-6.png" width="200" />
 </p>
 
 ## Target Hardware
