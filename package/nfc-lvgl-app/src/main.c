@@ -1159,6 +1159,9 @@ static void apply_theme(void) {
         lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
         /* Color is set dynamically based on connection state */
     }
+    if (g_settings_btn_reboot) {
+        lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
@@ -2576,7 +2579,7 @@ static void create_ui(void) {
     lv_textarea_set_text(g_settings_ta_ota_url, g_ota_url);
     lv_textarea_set_one_line(g_settings_ta_ota_url, true);
     lv_textarea_set_placeholder_text(g_settings_ta_ota_url, "http://host:port");
-    lv_obj_set_size(g_settings_ta_ota_url, 512, textarea_height);
+    lv_obj_set_size(g_settings_ta_ota_url, 500, textarea_height);
     lv_obj_set_style_text_color(g_settings_ta_ota_url, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_ta_ota_url, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_set_style_bg_color(g_settings_ta_ota_url, THEME_MODAL_BG, LV_PART_MAIN);
@@ -2599,13 +2602,14 @@ static void create_ui(void) {
 
     /* Reboot button (starts disabled) */
     g_settings_btn_reboot = lv_button_create(g_settings_modal);
-    lv_obj_set_size(g_settings_btn_reboot, 56, 48);
-    lv_obj_set_style_bg_opa(g_settings_btn_reboot, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_size(g_settings_btn_reboot, 72, 64);
+    lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_reboot, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_btn_reboot, 8, LV_PART_MAIN);
     lv_obj_set_style_border_width(g_settings_btn_reboot, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_width(g_settings_btn_reboot, 0, LV_PART_MAIN);
     lv_obj_align(g_settings_btn_reboot, LV_ALIGN_TOP_LEFT,
-        lv_obj_get_x(g_settings_mqtt_status), ota_row_y - 8);
+        lv_obj_get_x(g_settings_mqtt_status) - 14, ota_row_y - 18);
     lv_obj_add_state(g_settings_btn_reboot, LV_STATE_DISABLED);
     lv_obj_add_event_cb(g_settings_btn_reboot, ota_reboot_btn_cb, LV_EVENT_CLICKED, NULL);
 
