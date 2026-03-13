@@ -17,22 +17,34 @@ cp "${BINARIES_DIR}/rpi-firmware/fixup4.dat" "${BINARIES_DIR}/"
 cp "${BINARIES_DIR}/rpi-firmware/start4.elf" "${BINARIES_DIR}/"
 
 # Copy overlays directory to root level
-# First, save any custom overlays that were built by our packages
-mkdir -p "${BINARIES_DIR}/custom-overlays"
-if [ -d "${BINARIES_DIR}/overlays" ]; then
-    cp -a "${BINARIES_DIR}/overlays/"*.dtbo "${BINARIES_DIR}/custom-overlays/" 2>/dev/null || true
-fi
+# Only include rpi-firmware overlays actually referenced in config.txt
+# Custom overlays (nfc-pn7150, st7703-gx040hd, ft6336u-gx040hd) are installed
+# directly by their package .mk files into ${BINARIES_DIR}/overlays/
 
-# Copy rpi-firmware overlays
+# rpi-firmware overlays needed by config.txt dtoverlay= lines:
+# Note: vc4-kms-v3d-pi4.dtbo is required by vc4-kms-v3d.dtbo (resolved via overlay_map.dtb)
+RPI_OVERLAYS="
+    i2c-rtc.dtbo
+    dwc2.dtbo
+    disable-bt.dtbo
+    vc4-kms-v3d.dtbo
+    vc4-kms-v3d-pi4.dtbo
+    googlevoicehat-soundcard.dtbo
+"
+
 if [ -d "${BINARIES_DIR}/rpi-firmware/overlays" ]; then
-    rm -rf "${BINARIES_DIR}/overlays"
-    cp -a "${BINARIES_DIR}/rpi-firmware/overlays" "${BINARIES_DIR}/"
-fi
-
-# Restore our custom overlays (ST7703, FT6336U, etc.)
-if [ -d "${BINARIES_DIR}/custom-overlays" ]; then
-    cp -a "${BINARIES_DIR}/custom-overlays/"*.dtbo "${BINARIES_DIR}/overlays/" 2>/dev/null || true
-    rm -rf "${BINARIES_DIR}/custom-overlays"
+    mkdir -p "${BINARIES_DIR}/overlays"
+    for dtbo in ${RPI_OVERLAYS}; do
+        if [ -f "${BINARIES_DIR}/rpi-firmware/overlays/${dtbo}" ]; then
+            cp -a "${BINARIES_DIR}/rpi-firmware/overlays/${dtbo}" "${BINARIES_DIR}/overlays/"
+        else
+            echo "WARNING: Expected overlay ${dtbo} not found in rpi-firmware" >&2
+        fi
+    done
+    # overlay_map.dtb is used by Pi firmware to resolve platform-specific overlays
+    if [ -f "${BINARIES_DIR}/rpi-firmware/overlays/overlay_map.dtb" ]; then
+        cp -a "${BINARIES_DIR}/rpi-firmware/overlays/overlay_map.dtb" "${BINARIES_DIR}/overlays/"
+    fi
 fi
 
 # ============================================

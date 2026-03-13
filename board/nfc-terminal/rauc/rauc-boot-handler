@@ -61,6 +61,22 @@ write_cmdline() {
     local root
     root=$(slot_to_root "$1") || exit 1
     echo "root=${root} ${CMDLINE_OPTS} rauc.slot=$1" > "$CMDLINE"
+
+    # Sync kernel, DTB, and overlays from new active rootfs to boot partition
+    local tmp_mount="/tmp/rauc-slot-mount"
+    mkdir -p "$tmp_mount"
+    if mount -o ro "$root" "$tmp_mount" 2>/dev/null; then
+        if [ -f "$tmp_mount/boot/Image" ]; then
+            cp "$tmp_mount/boot/Image" "${BOOT_MOUNT}/Image.tmp"
+            mv "${BOOT_MOUNT}/Image.tmp" "${BOOT_MOUNT}/Image"
+            cp "$tmp_mount/boot/bcm2711-rpi-cm4.dtb" "${BOOT_MOUNT}/bcm2711-rpi-cm4.dtb"
+            rm -rf "${BOOT_MOUNT}/overlays"
+            cp -r "$tmp_mount/boot/overlays" "${BOOT_MOUNT}/overlays"
+        fi
+        umount "$tmp_mount"
+    fi
+    rmdir "$tmp_mount" 2>/dev/null || true
+
     sync
 }
 

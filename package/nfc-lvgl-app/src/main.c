@@ -48,6 +48,7 @@ LV_IMAGE_DECLARE(logo_small);
 #define FA_ICON_EXIT           "\xEF\x82\x8B"  /* U+F08B - arrow-right-from-bracket (exit) */
 #define FA_ICON_NETWORK        "\xEF\x9B\xBF"  /* U+F6FF - network-wired (MQTT status) */
 #define FA_ICON_MICROPHONE     "\xEF\x84\xB0"  /* U+F130 - microphone */
+#define FA_ICON_ROTATE         "\xEF\x8B\xB1"  /* U+F2F1 - rotate (reboot) */
 #define FA_ICON_NFC_BRANDS     "\xEE\x94\xB1"  /* U+E531 - nfc-symbol */
 
 #include "linux_nfc_api.h"
@@ -65,6 +66,13 @@ LV_IMAGE_DECLARE(logo_small);
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
+
+/* OTA Update */
+#define OTA_CHECK_INTERVAL_SEC  60  /* Check for OTA updates every 60 seconds */
+#define OTA_URL_CONF_PATH       "/data/ota-url.conf"
+#define OTA_DEFAULT_URL         "http://dst-nuc:8088"
+#define OTA_BUNDLE_NAME         "nfc-terminal.raucb"
+#define OTA_VERSION_NAME        "nfc-terminal.version"
 
 /* Logging macro - printf with immediate flush */
 #define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
@@ -259,6 +267,12 @@ static lv_obj_t *g_settings_mqtt_status = NULL; /* MQTT connection status icon *
 static lv_obj_t *g_settings_keyboard = NULL; /* Virtual keyboard */
 static lv_obj_t *g_active_textarea = NULL; /* Currently focused textarea */
 
+/* OTA Update UI */
+static lv_obj_t *g_settings_ta_ota_url = NULL;  /* Textarea for OTA URL */
+static lv_obj_t *g_settings_btn_reboot = NULL;   /* Reboot button */
+static lv_obj_t *g_settings_lbl_reboot_icon = NULL; /* Reboot button icon label */
+static lv_obj_t *g_settings_val_version = NULL; /* Installed version label */
+
 /* Custom keyboard maps for MQTT input (lowercase) */
 static const char * const mqtt_kb_map_lc[] = {
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
@@ -365,6 +379,14 @@ static mqtt_queue_entry_t g_mqtt_queue[MQTT_QUEUE_SIZE];
 static volatile int g_mqtt_queue_head = 0;
 static volatile int g_mqtt_queue_tail = 0;
 static pthread_mutex_t g_mqtt_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* OTA Update State */
+static char g_ota_url[256] = OTA_DEFAULT_URL;    /* Base URL for OTA server */
+static char g_ota_installed_version[32] = "";     /* Version of booted slot */
+static atomic_int g_ota_update_ready = 0;         /* 1 = update installed, reboot needed */
+static atomic_int g_ota_ui_refresh = 0;           /* Flag to refresh reboot button from main loop */
+static pthread_t g_ota_tid;
+static int g_ota_thread_started = 0;
 
 /* Forward declarations */
 static void mqtt_publish_tag_event(const char *tag_id, uint8_t protocol);
@@ -1106,6 +1128,9 @@ static void apply_theme(void) {
     if (g_settings_val_ip) {
         lv_obj_set_style_text_color(g_settings_val_ip, THEME_TEXT, LV_PART_MAIN);
     }
+    if (g_settings_val_version) {
+        lv_obj_set_style_text_color(g_settings_val_version, THEME_TEXT, LV_PART_MAIN);
+    }
     if (g_settings_ta_mqtt) {
         lv_obj_set_style_text_color(g_settings_ta_mqtt, THEME_TEXT, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_ta_mqtt, THEME_MODAL_BG, LV_PART_MAIN);
@@ -1124,9 +1149,21 @@ static void apply_theme(void) {
         lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT_SECONDARY, LV_PART_MAIN);
         lv_obj_set_style_border_color(g_settings_ta_mqtt_pswd, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
     }
+    if (g_settings_ta_ota_url) {
+        lv_obj_set_style_text_color(g_settings_ta_ota_url, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_ta_ota_url, THEME_MODAL_BG, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_ota_url, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_settings_ta_ota_url, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    }
     if (g_settings_mqtt_status) {
         lv_obj_set_style_bg_color(g_settings_mqtt_status, THEME_MODAL_BG, LV_PART_MAIN);
         /* Color is set dynamically based on connection state */
+    }
+    if (g_settings_btn_reboot) {
+        lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    }
+    if (g_settings_lbl_reboot_icon && !atomic_load(&g_ota_update_ready)) {
+        lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
     }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
@@ -1559,6 +1596,200 @@ static void landing_btn_ev_charging_cb(lv_event_t *e) {
     /* Not implemented yet */
 }
 
+/*====================
+   OTA UPDATE
+ *====================*/
+
+/* Load OTA URL from persistent storage */
+static void ota_load_url(void) {
+    FILE *f = fopen(OTA_URL_CONF_PATH, "r");
+    if (f) {
+        char buf[256];
+        if (fgets(buf, sizeof(buf), f)) {
+            /* Strip trailing newline/whitespace */
+            size_t len = strlen(buf);
+            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r' || buf[len-1] == ' '))
+                buf[--len] = '\0';
+            if (len > 0) {
+                strncpy(g_ota_url, buf, sizeof(g_ota_url) - 1);
+                g_ota_url[sizeof(g_ota_url) - 1] = '\0';
+                LOG("OTA: Loaded URL from %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
+            }
+        }
+        fclose(f);
+    } else {
+        LOG("OTA: No saved URL, using default: %s\n", g_ota_url);
+    }
+}
+
+/* Save OTA URL to persistent storage */
+static void ota_save_url(void) {
+    FILE *f = fopen(OTA_URL_CONF_PATH, "w");
+    if (f) {
+        fprintf(f, "%s\n", g_ota_url);
+        fclose(f);
+        LOG("OTA: Saved URL to %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
+    } else {
+        LOG("OTA: Failed to save URL to %s: %s\n", OTA_URL_CONF_PATH, strerror(errno));
+    }
+}
+
+/* Get the installed version from RAUC for the booted slot */
+static void ota_get_installed_version(void) {
+#ifdef DESKTOP_BUILD
+    strncpy(g_ota_installed_version, "0.0.0", sizeof(g_ota_installed_version));
+    return;
+#else
+    FILE *fp = popen("rauc status --detailed --output-format=shell 2>/dev/null", "r");
+    if (!fp) {
+        LOG("OTA: Failed to run rauc status\n");
+        return;
+    }
+
+    char line[512];
+    char booted_slot_num[4] = "";
+
+    /* First pass: find the booted slot number */
+    while (fgets(line, sizeof(line), fp)) {
+        /* Find which slot is booted: RAUC_SLOT_STATE_N='booted' */
+        char num[4], state[32];
+        if (sscanf(line, "RAUC_SLOT_STATE_%3[^=]='%31[^']'", num, state) == 2) {
+            if (strcmp(state, "booted") == 0) {
+                strncpy(booted_slot_num, num, sizeof(booted_slot_num) - 1);
+            }
+        }
+        /* Check version for matching slot */
+        if (booted_slot_num[0]) {
+            char key[64];
+            snprintf(key, sizeof(key), "RAUC_SLOT_STATUS_BUNDLE_VERSION_%s='", booted_slot_num);
+            if (strncmp(line, key, strlen(key)) == 0) {
+                char *ver_start = line + strlen(key);
+                char *ver_end = strchr(ver_start, '\'');
+                if (ver_end && ver_end > ver_start) {
+                    size_t vlen = ver_end - ver_start;
+                    if (vlen >= sizeof(g_ota_installed_version))
+                        vlen = sizeof(g_ota_installed_version) - 1;
+                    memcpy(g_ota_installed_version, ver_start, vlen);
+                    g_ota_installed_version[vlen] = '\0';
+                }
+                break;
+            }
+        }
+    }
+    pclose(fp);
+
+    /* Fallback: read version from /etc/nfc-terminal.version if RAUC had none */
+    if (g_ota_installed_version[0] == '\0') {
+        FILE *vf = fopen("/etc/nfc-terminal.version", "r");
+        if (vf) {
+            if (fgets(g_ota_installed_version, sizeof(g_ota_installed_version), vf)) {
+                size_t len = strlen(g_ota_installed_version);
+                while (len > 0 && (g_ota_installed_version[len-1] == '\n' ||
+                       g_ota_installed_version[len-1] == '\r'))
+                    g_ota_installed_version[--len] = '\0';
+            }
+            fclose(vf);
+        }
+    }
+    LOG("OTA: Installed version: '%s'\n", g_ota_installed_version);
+#endif
+}
+
+/* OTA background thread: periodically checks for updates and installs them */
+static void *ota_thread(void *arg) {
+    (void)arg;
+    LOG("OTA: Background thread started\n");
+
+    while (g_running) {
+        /* Sleep in 1-second increments so we can exit promptly */
+        for (int i = 0; i < OTA_CHECK_INTERVAL_SEC && g_running; i++)
+            sleep(1);
+        if (!g_running) break;
+
+        /* Skip if URL is empty or update already installed */
+        if (g_ota_url[0] == '\0' || atomic_load(&g_ota_update_ready))
+            continue;
+
+        /* Build version check URL */
+        char ver_url[512];
+        snprintf(ver_url, sizeof(ver_url), "%s/%s", g_ota_url, OTA_VERSION_NAME);
+
+        /* Fetch remote version with wget */
+        char cmd[600];
+        snprintf(cmd, sizeof(cmd), "wget -q -O - -T 5 '%s' 2>/dev/null", ver_url);
+        FILE *fp = popen(cmd, "r");
+        if (!fp) continue;
+
+        char remote_version[32] = "";
+        if (fgets(remote_version, sizeof(remote_version), fp)) {
+            /* Strip trailing whitespace */
+            size_t len = strlen(remote_version);
+            while (len > 0 && (remote_version[len-1] == '\n' || remote_version[len-1] == '\r' || remote_version[len-1] == ' '))
+                remote_version[--len] = '\0';
+        }
+        pclose(fp);
+
+        if (remote_version[0] == '\0') {
+            LOG("OTA: No version file at %s\n", ver_url);
+            continue;
+        }
+
+        LOG("OTA: Remote version='%s', installed='%s'\n", remote_version, g_ota_installed_version);
+
+        /* Compare versions - only install if different */
+        if (strcmp(remote_version, g_ota_installed_version) == 0)
+            continue;
+
+        /* Newer version available - install via RAUC */
+        char bundle_url[512];
+        snprintf(bundle_url, sizeof(bundle_url), "%s/%s", g_ota_url, OTA_BUNDLE_NAME);
+        LOG("OTA: Installing update from %s\n", bundle_url);
+
+        char install_cmd[600];
+        snprintf(install_cmd, sizeof(install_cmd), "rauc install '%s' 2>&1", bundle_url);
+        fp = popen(install_cmd, "r");
+        if (!fp) {
+            LOG("OTA: Failed to run rauc install\n");
+            continue;
+        }
+
+        /* Log rauc output */
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            /* Strip trailing newline for cleaner logs */
+            size_t len = strlen(line);
+            if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+            LOG("OTA: rauc: %s\n", line);
+        }
+        int status = pclose(fp);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            LOG("OTA: Update installed successfully, reboot needed\n");
+            atomic_store(&g_ota_update_ready, 1);
+            atomic_store(&g_ota_ui_refresh, 1);
+        } else {
+            LOG("OTA: rauc install failed (exit code %d)\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
+    }
+
+    LOG("OTA: Background thread exiting\n");
+    return NULL;
+}
+
+/* Reboot button callback */
+static void ota_reboot_btn_cb(lv_event_t *e) {
+    (void)e;
+    if (!atomic_load(&g_ota_update_ready)) return;
+    LOG("OTA: Reboot requested by user\n");
+#ifndef DESKTOP_BUILD
+    sync();
+    if (system("reboot") != 0)
+        LOG("OTA: reboot command failed\n");
+#else
+    LOG("OTA: Desktop build - reboot simulated\n");
+#endif
+}
+
 static void back_btn_cb(lv_event_t *e) {
     (void)e;
     LOG("UI: Back button pressed - returning to landing page\n");
@@ -1646,6 +1877,19 @@ static int check_mqtt_settings_changed(void) {
     return changed;
 }
 
+/* Check if OTA URL setting changed and persist */
+static void check_ota_url_changed(void) {
+    if (!g_settings_ta_ota_url) return;
+    const char *new_url = lv_textarea_get_text(g_settings_ta_ota_url);
+    if (!new_url) return;
+    if (strcmp(new_url, g_ota_url) != 0) {
+        strncpy(g_ota_url, new_url, sizeof(g_ota_url) - 1);
+        g_ota_url[sizeof(g_ota_url) - 1] = '\0';
+        ota_save_url();
+        LOG("OTA: URL changed to: %s\n", g_ota_url);
+    }
+}
+
 /* Update settings modal info labels */
 static void update_settings_info(void) {
     if (!g_settings_modal) return;
@@ -1676,6 +1920,26 @@ static void update_settings_info(void) {
         pthread_mutex_unlock(&g_mqtt_mutex);
         lv_obj_set_style_text_color(g_settings_mqtt_status,
             connected ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+    }
+    /* OTA URL */
+    if (g_settings_ta_ota_url) {
+        lv_textarea_set_text(g_settings_ta_ota_url, g_ota_url);
+    }
+    /* Reboot button: enable + green icon if update ready, else disabled + grey icon */
+    if (g_settings_btn_reboot) {
+        if (atomic_load(&g_ota_update_ready)) {
+            lv_obj_clear_state(g_settings_btn_reboot, LV_STATE_DISABLED);
+            if (g_settings_lbl_reboot_icon)
+                lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, COLOR_STATUS_GREEN, LV_PART_MAIN);
+        } else {
+            lv_obj_add_state(g_settings_btn_reboot, LV_STATE_DISABLED);
+            if (g_settings_lbl_reboot_icon)
+                lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+        }
+    }
+    /* Version label */
+    if (g_settings_val_version) {
+        lv_label_set_text(g_settings_val_version, g_ota_installed_version[0] ? g_ota_installed_version : "--");
     }
 }
 
@@ -1710,8 +1974,9 @@ static void settings_close_btn_cb(lv_event_t *e) {
         }
     }
 
-    /* Check if any MQTT settings changed and trigger reconnect */
+    /* Check if any settings changed */
     check_mqtt_settings_changed();
+    check_ota_url_changed();
 }
 
 /* Keyboard value changed callback - refresh textarea display after each keypress */
@@ -1770,7 +2035,8 @@ static void settings_modal_click_cb(lv_event_t *e) {
         int on_input = 0;
         while (obj != NULL) {
             if (obj == g_settings_ta_mqtt || obj == g_settings_ta_mqtt_user ||
-                obj == g_settings_ta_mqtt_pswd || obj == g_settings_keyboard) { on_input = 1; break; }
+                obj == g_settings_ta_mqtt_pswd || obj == g_settings_ta_ota_url ||
+                obj == g_settings_keyboard) { on_input = 1; break; }
             obj = lv_obj_get_parent(obj);
         }
         if (!on_input) {
@@ -1786,8 +2052,9 @@ static void settings_modal_click_cb(lv_event_t *e) {
         }
     }
 
-    /* Always check if any MQTT settings changed and trigger reconnect */
+    /* Always check if settings changed */
     check_mqtt_settings_changed();
+    check_ota_url_changed();
 }
 
 static void create_ui(void) {
@@ -2073,8 +2340,8 @@ static void create_ui(void) {
        SETTINGS MODAL
      *========================================*/
     g_settings_modal = lv_obj_create(scr);
-    lv_obj_set_size(g_settings_modal, 700, 608);
-    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 44);  /* top edge 8px higher, bottom unchanged */
+    lv_obj_set_size(g_settings_modal, 700, 700);
+    lv_obj_align(g_settings_modal, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(g_settings_modal, THEME_MODAL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_settings_modal, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_modal, 16, LV_PART_MAIN);
@@ -2090,7 +2357,7 @@ static void create_ui(void) {
     g_settings_title = lv_label_create(g_settings_modal);
     lv_label_set_text(g_settings_title, "Settings");
     lv_obj_set_style_text_color(g_settings_title, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_32, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_title, &lv_font_montserrat_36, LV_PART_MAIN);
     lv_obj_align(g_settings_title, LV_ALIGN_TOP_MID, 0, 20);
 
     /* Close button (X) */
@@ -2119,7 +2386,7 @@ static void create_ui(void) {
     /* Row layout constants */
     const int row_start_y = 94;
     const int row_gap = 72;
-    const int textarea_height = 44;
+    const int textarea_height = 48;
     const int theme_btn_size = 76;
     const int theme_btn_gap = 16;
 
@@ -2274,14 +2541,14 @@ static void create_ui(void) {
     lv_label_set_text(lbl_pswd_key, "Pswd");
     lv_obj_set_style_text_color(lbl_pswd_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
     lv_obj_set_style_text_font(lbl_pswd_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 368, creds_row_y);
+    lv_obj_align(lbl_pswd_key, LV_ALIGN_TOP_LEFT, 356, creds_row_y);
 
     g_settings_ta_mqtt_pswd = lv_textarea_create(g_settings_modal);
     lv_textarea_set_text(g_settings_ta_mqtt_pswd, "--");
     lv_textarea_set_one_line(g_settings_ta_mqtt_pswd, true);
     lv_textarea_set_placeholder_text(g_settings_ta_mqtt_pswd, "password");
     lv_textarea_set_password_mode(g_settings_ta_mqtt_pswd, true);
-    lv_obj_set_size(g_settings_ta_mqtt_pswd, 220, textarea_height);
+    lv_obj_set_size(g_settings_ta_mqtt_pswd, 232, textarea_height);
     lv_obj_set_style_text_color(g_settings_ta_mqtt_pswd, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_ta_mqtt_pswd, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_set_style_bg_color(g_settings_ta_mqtt_pswd, THEME_MODAL_BG, LV_PART_MAIN);
@@ -2302,8 +2569,61 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
 
-    /*--- Row 4: MAC and IP labels ---*/
-    const int info_row_y = creds_row_y + row_gap - 2;
+    /*--- Row 4: OTA URL + Reboot button ---*/
+    const int ota_row_y = creds_row_y + row_gap;
+
+    lv_obj_t *lbl_ota_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_ota_key, "OTA");
+    lv_obj_set_style_text_color(lbl_ota_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_ota_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_ota_key, LV_ALIGN_TOP_LEFT, 20, ota_row_y);
+
+    g_settings_ta_ota_url = lv_textarea_create(g_settings_modal);
+    lv_textarea_set_text(g_settings_ta_ota_url, g_ota_url);
+    lv_textarea_set_one_line(g_settings_ta_ota_url, true);
+    lv_textarea_set_placeholder_text(g_settings_ta_ota_url, "http://host:port");
+    lv_obj_set_size(g_settings_ta_ota_url, 500, textarea_height);
+    lv_obj_set_style_text_color(g_settings_ta_ota_url, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_ta_ota_url, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(g_settings_ta_ota_url, THEME_MODAL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_ota_url, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(g_settings_ta_ota_url, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_ta_ota_url, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_ta_ota_url, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(g_settings_ta_ota_url, 6, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_ta_ota_url, LV_OPA_TRANSP, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_ota_url, 0, LV_PART_CURSOR);
+    lv_obj_set_style_border_width(g_settings_ta_ota_url, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(g_settings_ta_ota_url, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(g_settings_ta_ota_url, THEME_TEXT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(g_settings_ta_ota_url, 0, LV_PART_CURSOR);
+    lv_obj_clear_state(g_settings_ta_ota_url, LV_STATE_FOCUSED | LV_STATE_FOCUS_KEY);
+    lv_obj_remove_flag(g_settings_ta_ota_url, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_align_to(g_settings_ta_ota_url, lbl_ota_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_add_event_cb(g_settings_ta_ota_url, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(g_settings_ta_ota_url, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
+
+    /* Reboot button (starts disabled) */
+    g_settings_btn_reboot = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_settings_btn_reboot, 72, 64);
+    lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_reboot, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_settings_btn_reboot, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_btn_reboot, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_settings_btn_reboot, 0, LV_PART_MAIN);
+    lv_obj_align(g_settings_btn_reboot, LV_ALIGN_TOP_LEFT,
+        lv_obj_get_x(g_settings_mqtt_status) - 14, ota_row_y - 18);
+    lv_obj_add_state(g_settings_btn_reboot, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(g_settings_btn_reboot, ota_reboot_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    g_settings_lbl_reboot_icon = lv_label_create(g_settings_btn_reboot);
+    lv_label_set_text(g_settings_lbl_reboot_icon, FA_ICON_ROTATE);
+    lv_obj_set_style_text_font(g_settings_lbl_reboot_icon, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    lv_obj_center(g_settings_lbl_reboot_icon);
+
+    /*--- Row 5: MAC and IP labels ---*/
+    const int info_row_y = ota_row_y + row_gap - 8;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
@@ -2332,6 +2652,21 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_settings_val_ip, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+    /*--- Row 6: Version label ---*/
+    const int ver_row_y = info_row_y + 54;
+
+    lv_obj_t *lbl_ver_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_ver_key, "Image");
+    lv_obj_set_style_text_color(lbl_ver_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_ver_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_ver_key, LV_ALIGN_TOP_LEFT, 20, ver_row_y);
+
+    g_settings_val_version = lv_label_create(g_settings_modal);
+    lv_label_set_text(g_settings_val_version, g_ota_installed_version[0] ? g_ota_installed_version : "--");
+    lv_obj_set_style_text_color(g_settings_val_version, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_val_version, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align_to(g_settings_val_version, lbl_ver_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
     LOG("UI: Settings modal created\n");
 
@@ -2908,6 +3243,16 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Load OTA URL and start OTA background thread */
+    ota_load_url();
+    ota_get_installed_version();
+    if (pthread_create(&g_ota_tid, NULL, ota_thread, NULL) == 0) {
+        g_ota_thread_started = 1;
+        LOG("OTA: Thread started\n");
+    } else {
+        LOG("OTA: Failed to start thread\n");
+    }
+
     /* Main loop */
     int last_mqtt_connected = -1;  /* Track MQTT connection state changes for UI */
     int last_nfc_ready = -1;       /* Track NFC status changes for UI */
@@ -2945,6 +3290,17 @@ int main(int argc, char *argv[]) {
                         nfc_ready ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_header_nfc_status);
                 }
+            }
+        }
+
+        /* Update OTA reboot button icon when update is ready */
+        if (atomic_load(&g_ota_ui_refresh)) {
+            atomic_store(&g_ota_ui_refresh, 0);
+            if (g_settings_btn_reboot) {
+                lv_obj_clear_state(g_settings_btn_reboot, LV_STATE_DISABLED);
+                if (g_settings_lbl_reboot_icon)
+                    lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, COLOR_STATUS_GREEN, LV_PART_MAIN);
+                lv_obj_invalidate(g_settings_btn_reboot);
             }
         }
 
@@ -3053,6 +3409,10 @@ int main(int argc, char *argv[]) {
         waitpid(g_arecord_pid, NULL, 0);
         LOG("MIC: Recording stopped on exit (pid=%d)\n", g_arecord_pid);
         g_arecord_pid = -1;
+    }
+    if (g_ota_thread_started) {
+        pthread_join(g_ota_tid, NULL);
+        LOG("OTA: Thread joined\n");
     }
     pthread_join(nfc_tid, NULL);
     mqtt_deinit();

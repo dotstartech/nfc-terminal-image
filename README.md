@@ -124,6 +124,7 @@ This configures Buildroot with the external tree and builds everything.
 | `./build.sh flash /dev/sdX` | Flash built image to SD card or eMMC device |
 | `./build.sh rpiboot` | Start rpiboot for CM4 eMMC programming mode |
 | `./build.sh desktop-build` | Build nfc-lvgl-app for desktop (x86_64) with SDL2 for UI testing |
+| `./build.sh dist [version]` | Create signed RAUC bundle + version file (reads `nfc-terminal.version` if no version given) |
 
 4. **Output files** will be in `buildroot/output/images/`:
    - `nfc-terminal.img` - Complete bootable image
@@ -439,29 +440,31 @@ The image uses [RAUC](https://rauc.io/) for robust over-the-air (OTA) updates wi
 ┌────────────┬────────────┬────────────┬────────────┐
 │    boot    │  rootfs_a  │  rootfs_b  │    data    │
 │   (FAT32)  │   (ext4)   │   (ext4)   │   (ext4)   │
-│    32 MB   │   64 MB    │   64 MB    │   16 MB    │
+│    64 MB   │   96 MB    │   96 MB    │   16 MB    │
 │  /dev/     │  /dev/     │  /dev/     │  /dev/     │
 │  mmcblk0p1 │  mmcblk0p2 │  mmcblk0p3 │  mmcblk0p4 │
 ├────────────┼────────────┼────────────┼────────────┤
-│  Kernel,   │  Slot A    │  Slot B    │  Persistent│
-│  DTBs,     │  (factory  │  (empty    │  state,    │
-│  firmware, │   image)   │  initially)│  rauc.     │
-│  boot.ini, │            │            │  status    │
-│  cmdline   │            │            │            │
+│  Active    │  Slot A    │  Slot B    │  Persistent│
+│  kernel,   │  rootfs +  │  rootfs +  │  state,    │
+│  DTBs,     │  kernel,   │  kernel,   │  rauc.     │
+│  overlays, │  DTBs,     │  DTBs,     │  status,   │
+│  firmware, │  overlays  │  overlays  │  ota-url.  │
+│  boot.ini, │  (factory  │  (empty    │  conf      │
+│  cmdline   │   image)   │  initially)│            │
 └────────────┴────────────┴────────────┴────────────┘
 ```
 
-- **boot**: Shared boot partition with kernel, device trees, firmware, and boot state. Both slots share the same kernel — only the rootfs is swapped.
-- **rootfs_a / rootfs_b**: A/B root filesystem slots. The factory image populates slot A; slot B is left empty for the first OTA update.
-- **data**: Persistent partition mounted at `/data`, stores `rauc.status` and survives updates.
+- **boot**: Shared boot partition with firmware (`start4.elf`, `fixup4.dat`), boot state (`boot.ini`, `cmdline.txt`), and a copy of the **active** slot's kernel, DTB, and overlays. The boot partition is 64 MB to accommodate the kernel image (~22 MB) plus a temporary copy during RAUC updates.
+- **rootfs_a / rootfs_b**: A/B root filesystem slots. Each slot contains the complete rootfs **plus** the kernel (`/boot/Image`), device tree (`/boot/bcm2711-rpi-cm4.dtb`), and overlays (`/boot/overlays/`). This makes RAUC bundles fully self-contained — a single rootfs update carries the matching kernel. The factory image populates slot A; slot B is left empty for the first OTA update.
+- **data**: Persistent partition mounted at `/data`, stores `rauc.status`, `ota-url.conf`, and survives updates.
 
 ### How A/B Updates Work
 
 1. The RPi CM4 firmware reads `cmdline.txt` from the boot partition at power-on — this selects which rootfs partition to mount via the `root=` parameter.
 2. RAUC detects the currently booted slot by reading `rauc.slot=A|B` from `/proc/cmdline`.
 3. When an update bundle is installed, RAUC writes the new rootfs image to the **inactive** slot.
-4. RAUC calls the custom boot handler to set the new slot as primary — this rewrites `cmdline.txt` to point to the new partition.
-5. On reboot, the firmware boots into the updated slot.
+4. RAUC calls the custom boot handler (`rauc-boot-handler`) to set the new slot as primary — this rewrites `cmdline.txt` to point to the new partition **and** syncs the kernel (`Image`), device tree (`bcm2711-rpi-cm4.dtb`), and overlays from the new slot's `/boot/` directory to the shared boot partition.
+5. On reboot, the firmware boots into the updated slot with the matching kernel and device trees.
 6. An init script (`S99rauc`) calls `rauc status mark-good` after a successful boot, confirming the update.
 
 Since the RPi CM4 uses the Raspberry Pi firmware bootloader (not U-Boot or Barebox), a custom bootloader backend script manages slot selection by rewriting `cmdline.txt` and tracking state in `boot.ini` on the FAT boot partition.
@@ -476,6 +479,7 @@ compatible=nfc-terminal-cm4
 bootloader=custom
 statusfile=/data/rauc.status
 bundle-formats=-plain
+max-bundle-download-size=100663296
 
 [keyring]
 path=/etc/rauc/ca.cert.pem
@@ -566,7 +570,7 @@ buildroot/output/host/bin/rauc bundle \
     --cert=board/nfc-terminal/rauc/certs/signing.cert.pem \
     --key=board/nfc-terminal/rauc/certs/signing.key.pem \
     /tmp/rauc-bundle \
-    buildroot/output/images/nfc-terminal-update.raucb
+    buildroot/output/images/nfc-terminal.raucb
 ```
 
 #### 4. Verify the bundle (optional)
@@ -574,7 +578,7 @@ buildroot/output/host/bin/rauc bundle \
 ```bash
 buildroot/output/host/bin/rauc info \
     --keyring=board/nfc-terminal/rauc/certs/ca.cert.pem \
-    buildroot/output/images/nfc-terminal-update.raucb
+    buildroot/output/images/nfc-terminal.raucb
 ```
 
 ### Installing Updates
@@ -585,11 +589,11 @@ Copy the bundle to the device and install:
 
 ```bash
 # Copy bundle to device
-scp buildroot/output/images/nfc-terminal-update.raucb root@<device-ip>:/tmp/
+scp buildroot/output/images/nfc-terminal.raucb root@<device-ip>:/tmp/
 
 # SSH into device and install
 ssh root@<device-ip>
-rauc install /tmp/nfc-terminal-update.raucb
+rauc install /tmp/nfc-terminal.raucb
 
 # Reboot to activate the update
 reboot
@@ -605,7 +609,7 @@ cd buildroot/output/images
 python3 -m http.server 8080
 
 # On the device — install from network
-rauc install http://<host-ip>:8080/nfc-terminal-update.raucb
+rauc install http://<host-ip>:8080/nfc-terminal.raucb
 ```
 
 For production, use an HTTPS server with a proper TLS certificate.
@@ -653,7 +657,7 @@ rauc status
 
 # 3. Make a change to the rootfs (e.g., bump version) and create a new bundle
 # 4. Install the update
-rauc install /tmp/nfc-terminal-update.raucb
+rauc install /tmp/nfc-terminal.raucb
 # → RAUC writes to slot B, sets B as primary
 
 # 5. Reboot
