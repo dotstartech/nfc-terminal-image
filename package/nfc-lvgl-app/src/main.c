@@ -1162,6 +1162,9 @@ static void apply_theme(void) {
     if (g_settings_btn_reboot) {
         lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
     }
+    if (g_settings_lbl_reboot_icon && !atomic_load(&g_ota_update_ready)) {
+        lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
+    }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
@@ -1931,7 +1934,7 @@ static void update_settings_info(void) {
         } else {
             lv_obj_add_state(g_settings_btn_reboot, LV_STATE_DISABLED);
             if (g_settings_lbl_reboot_icon)
-                lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, COLOR_GREY, LV_PART_MAIN);
+                lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
         }
     }
     /* Version label */
@@ -2616,7 +2619,7 @@ static void create_ui(void) {
     g_settings_lbl_reboot_icon = lv_label_create(g_settings_btn_reboot);
     lv_label_set_text(g_settings_lbl_reboot_icon, FA_ICON_ROTATE);
     lv_obj_set_style_text_font(g_settings_lbl_reboot_icon, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
     lv_obj_center(g_settings_lbl_reboot_icon);
 
     /*--- Row 5: MAC and IP labels ---*/
