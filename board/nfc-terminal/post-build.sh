@@ -632,4 +632,10 @@ fi
 cp ${BINARIES_DIR}/Image ${TARGET_DIR}/boot/Image
 cp ${BINARIES_DIR}/bcm2711-rpi-cm4.dtb ${TARGET_DIR}/boot/
 
+# Install image version file
+VERSION_FILE="${BOARD_DIR}/../../nfc-terminal.version"
+if [ -f "${VERSION_FILE}" ]; then
+    cp "${VERSION_FILE}" ${TARGET_DIR}/etc/nfc-terminal.version
+fi
+
 echo "NFC Terminal post-build completed"

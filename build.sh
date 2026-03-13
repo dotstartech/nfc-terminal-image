@@ -268,6 +268,85 @@ case "${1:-build}" in
         print_status "Binary: ${APP_DIR}/desktop_build/nfc-lvgl-app-desktop"
         ;;
 
+    dist)
+        VERSION="${2}"
+        if [ -z "${VERSION}" ]; then
+            VERFILE_SRC="${SCRIPT_DIR}/nfc-terminal.version"
+            if [ -f "${VERFILE_SRC}" ]; then
+                VERSION=$(tr -d '\n\r ' < "${VERFILE_SRC}")
+            fi
+        fi
+        if [ -z "${VERSION}" ]; then
+            print_error "No version specified and nfc-terminal.version not found."
+            print_error "Usage: $0 dist [version]"
+            print_error "Example: $0 dist 0.8.0"
+            exit 1
+        fi
+
+        IMAGES_DIR="${BUILDROOT_DIR}/output/images"
+        ROOTFS="${IMAGES_DIR}/rootfs.ext4"
+        CERT="${SCRIPT_DIR}/board/nfc-terminal/rauc/certs/signing.cert.pem"
+        KEY="${SCRIPT_DIR}/board/nfc-terminal/rauc/certs/signing.key.pem"
+        RAUC="${BUILDROOT_DIR}/output/host/bin/rauc"
+        BUNDLE="${IMAGES_DIR}/nfc-terminal.raucb"
+        VERFILE="${IMAGES_DIR}/nfc-terminal.version"
+        TMPDIR=$(mktemp -d)
+
+        trap 'rm -rf "${TMPDIR}"' EXIT
+
+        # Validate prerequisites
+        if [ ! -f "${ROOTFS}" ]; then
+            print_error "rootfs.ext4 not found. Run '$0 build' first."
+            exit 1
+        fi
+        if [ ! -x "${RAUC}" ]; then
+            print_error "rauc host tool not found. Run '$0 build' first."
+            exit 1
+        fi
+        for f in "${CERT}" "${KEY}"; do
+            if [ ! -f "${f}" ]; then
+                print_error "Missing: ${f}"
+                exit 1
+            fi
+        done
+
+        print_status "Creating RAUC bundle v${VERSION}..."
+
+        # Create manifest
+        cat > "${TMPDIR}/manifest.raucm" << EOF
+[update]
+compatible=nfc-terminal-cm4
+version=${VERSION}
+
+[bundle]
+format=verity
+
+[image.rootfs]
+filename=rootfs.ext4
+type=ext4
+EOF
+
+        # Copy rootfs
+        cp "${ROOTFS}" "${TMPDIR}/rootfs.ext4"
+
+        # Remove old bundle if present
+        rm -f "${BUNDLE}"
+
+        # Create signed bundle
+        "${RAUC}" bundle \
+            --cert="${CERT}" \
+            --key="${KEY}" \
+            "${TMPDIR}" \
+            "${BUNDLE}"
+
+        # Create version file
+        printf '%s' "${VERSION}" > "${VERFILE}"
+
+        print_status "Bundle created: ${BUNDLE}"
+        print_status "Version file:   ${VERFILE}"
+        ls -lh "${BUNDLE}" "${VERFILE}"
+        ;;
+
     *)
         echo "NFC Terminal Build Script"
         echo ""
@@ -287,5 +366,6 @@ case "${1:-build}" in
         echo "  flash [-y] <device>  - Flash image to SD card or eMMC device (-y = no prompts)"
         echo "  rpiboot         - Start rpiboot for CM4 eMMC programming"
         echo "  desktop-build   - Build nfc-lvgl-app for desktop (x86_64) with SDL2"
+        echo "  dist [version]  - Create signed RAUC bundle + version file (default: nfc-terminal.version)"
         ;;
 esac
