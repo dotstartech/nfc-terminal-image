@@ -74,6 +74,9 @@ LV_IMAGE_DECLARE(logo_small);
 #define OTA_BUNDLE_NAME         "nfc-terminal.raucb"
 #define OTA_VERSION_NAME        "nfc-terminal.version"
 
+/* Sound Recording */
+#define SOUND_REC_CONF_PATH     "/data/sound-recording.conf"
+
 /* Logging macro - printf with immediate flush */
 #define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
 
@@ -272,6 +275,7 @@ static lv_obj_t *g_settings_ta_ota_url = NULL;  /* Textarea for OTA URL */
 static lv_obj_t *g_settings_btn_reboot = NULL;   /* Reboot button */
 static lv_obj_t *g_settings_lbl_reboot_icon = NULL; /* Reboot button icon label */
 static lv_obj_t *g_settings_val_version = NULL; /* Installed version label */
+static lv_obj_t *g_settings_cb_sound_rec = NULL; /* Sound recording checkbox */
 
 /* Custom keyboard maps for MQTT input (lowercase) */
 static const char * const mqtt_kb_map_lc[] = {
@@ -319,6 +323,7 @@ static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in 
 static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
 static lv_obj_t *g_header_mic_status = NULL;  /* Microphone status icon in header */
 static pid_t g_arecord_pid = -1;              /* PID of arecord process, -1 if not recording */
+static int g_sound_recording_enabled = 0;     /* Sound recording setting (0=disabled, 1=enabled) */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1165,6 +1170,11 @@ static void apply_theme(void) {
     if (g_settings_lbl_reboot_icon && !atomic_load(&g_ota_update_ready)) {
         lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
     }
+    if (g_settings_cb_sound_rec) {
+        lv_obj_set_style_text_color(g_settings_cb_sound_rec, THEME_TEXT, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(g_settings_cb_sound_rec, THEME_MODAL_BG, LV_PART_INDICATOR);
+        lv_obj_set_style_border_color(g_settings_cb_sound_rec, THEME_TEXT_SECONDARY, LV_PART_INDICATOR);
+    }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
@@ -1634,6 +1644,28 @@ static void ota_save_url(void) {
     }
 }
 
+/* Load sound recording setting from persistent storage */
+static void sound_rec_load(void) {
+    FILE *f = fopen(SOUND_REC_CONF_PATH, "r");
+    if (f) {
+        char buf[16];
+        if (fgets(buf, sizeof(buf), f)) {
+            g_sound_recording_enabled = (atoi(buf) != 0) ? 1 : 0;
+        }
+        fclose(f);
+    }
+    LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
+}
+
+/* Save sound recording setting to persistent storage */
+static void sound_rec_save(void) {
+    FILE *f = fopen(SOUND_REC_CONF_PATH, "w");
+    if (f) {
+        fprintf(f, "%d\n", g_sound_recording_enabled);
+        fclose(f);
+    }
+}
+
 /* Get the installed version from RAUC for the booted slot */
 static void ota_get_installed_version(void) {
 #ifdef DESKTOP_BUILD
@@ -1890,6 +1922,14 @@ static void check_ota_url_changed(void) {
     }
 }
 
+/* Sound recording checkbox callback */
+static void sound_rec_cb(lv_event_t *e) {
+    lv_obj_t *cb = lv_event_get_target(e);
+    g_sound_recording_enabled = lv_obj_has_state(cb, LV_STATE_CHECKED) ? 1 : 0;
+    sound_rec_save();
+    LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
+}
+
 /* Update settings modal info labels */
 static void update_settings_info(void) {
     if (!g_settings_modal) return;
@@ -1940,6 +1980,13 @@ static void update_settings_info(void) {
     /* Version label */
     if (g_settings_val_version) {
         lv_label_set_text(g_settings_val_version, g_ota_installed_version[0] ? g_ota_installed_version : "--");
+    }
+    /* Sound recording checkbox */
+    if (g_settings_cb_sound_rec) {
+        if (g_sound_recording_enabled)
+            lv_obj_add_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
+        else
+            lv_obj_clear_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
     }
 }
 
@@ -2085,7 +2132,7 @@ static void create_ui(void) {
     g_landing_title = lv_label_create(g_landing_container);
     lv_label_set_text(g_landing_title, "NFC Terminal Demo");
     lv_obj_set_style_text_color(g_landing_title, COLOR_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_36, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_landing_title, &lv_font_montserrat_40, LV_PART_MAIN);
     lv_obj_align(g_landing_title, LV_ALIGN_TOP_MID, 0, 34);
 
     /* Settings button (hamburger menu) in top right corner */
@@ -2622,8 +2669,31 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
     lv_obj_center(g_settings_lbl_reboot_icon);
 
-    /*--- Row 5: MAC and IP labels ---*/
-    const int info_row_y = ota_row_y + row_gap - 8;
+    /*--- Row 5: Sound Recording checkbox ---*/
+    const int rec_row_y = ota_row_y + row_gap - 8;
+
+    lv_obj_t *lbl_sound_rec = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_sound_rec, "Sound Recording");
+    lv_obj_set_style_text_color(lbl_sound_rec, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_sound_rec, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_sound_rec, LV_ALIGN_TOP_LEFT, 20, rec_row_y);
+
+    g_settings_cb_sound_rec = lv_checkbox_create(g_settings_modal);
+    lv_checkbox_set_text(g_settings_cb_sound_rec, "");
+    lv_obj_set_style_border_color(g_settings_cb_sound_rec, COLOR_LIGHT_GREY, LV_PART_INDICATOR);
+    lv_obj_set_style_border_width(g_settings_cb_sound_rec, 2, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_settings_cb_sound_rec, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(g_settings_cb_sound_rec, THEME_MODAL_BG, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(g_settings_cb_sound_rec, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(g_settings_cb_sound_rec, COLOR_STATUS_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_border_color(g_settings_cb_sound_rec, COLOR_STATUS_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_align_to(g_settings_cb_sound_rec, lbl_sound_rec, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+    if (g_sound_recording_enabled)
+        lv_obj_add_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(g_settings_cb_sound_rec, sound_rec_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /*--- Row 6: MAC and IP labels ---*/
+    const int info_row_y = rec_row_y + 52;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
@@ -2653,8 +2723,8 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    /*--- Row 6: Version label ---*/
-    const int ver_row_y = info_row_y + 54;
+    /*--- Row 7: Version label ---*/
+    const int ver_row_y = info_row_y + 52;
 
     lv_obj_t *lbl_ver_key = lv_label_create(g_settings_modal);
     lv_label_set_text(lbl_ver_key, "Image");
@@ -2703,7 +2773,7 @@ static void create_ui(void) {
     /* Start on landing page */
     LOG("UI: Calling show_page(PAGE_LANDING)...\n");
     show_page(PAGE_LANDING);
-    LOG("UI: UI creation complete.\n");
+    LOG("UI: UI creation complete\n");
 }
 
 /*====================
@@ -3243,9 +3313,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Load OTA URL and start OTA background thread */
+    /* Load settings and start OTA background thread */
     ota_load_url();
     ota_get_installed_version();
+    sound_rec_load();
     if (pthread_create(&g_ota_tid, NULL, ota_thread, NULL) == 0) {
         g_ota_thread_started = 1;
         LOG("OTA: Thread started\n");
@@ -3337,12 +3408,12 @@ int main(int argc, char *argv[]) {
                 /* Update mic icon color */
                 if (g_header_mic_status) {
                     lv_obj_set_style_text_color(g_header_mic_status,
-                        any_checked_in ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                        (any_checked_in && g_sound_recording_enabled) ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_header_mic_status);
                 }
 
-                /* Start/stop recording based on check-in state */
-                if (any_checked_in && g_arecord_pid == -1) {
+                /* Start/stop recording based on check-in state and setting */
+                if (g_sound_recording_enabled && any_checked_in && g_arecord_pid == -1) {
                     /* Build filename: <tag_id_no_colons_lc>-YYYYMMDDTHHMMSS.wav */
                     char rec_path[256];
                     {
@@ -3386,7 +3457,7 @@ int main(int argc, char *argv[]) {
                     } else {
                         LOG("MIC: fork() failed: %s\n", strerror(errno));
                     }
-                } else if (!any_checked_in && g_arecord_pid > 0) {
+                } else if ((!any_checked_in || !g_sound_recording_enabled) && g_arecord_pid > 0) {
                     kill(g_arecord_pid, SIGTERM);
                     waitpid(g_arecord_pid, NULL, 0);
                     LOG("MIC: Recording stopped (pid=%d)\n", g_arecord_pid);
