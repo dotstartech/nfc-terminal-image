@@ -69,13 +69,13 @@ LV_IMAGE_DECLARE(logo_small);
 
 /* OTA Update */
 #define OTA_CHECK_INTERVAL_SEC  60  /* Check for OTA updates every 60 seconds */
-#define OTA_URL_CONF_PATH       "/data/ota-url.conf"
 #define OTA_DEFAULT_URL         "http://dst-nuc:8088"
 #define OTA_BUNDLE_NAME         "nfc-terminal.raucb"
 #define OTA_VERSION_NAME        "nfc-terminal.version"
 
-/* Sound Recording */
-#define SOUND_REC_CONF_PATH     "/data/sound-recording.conf"
+/* Persistent configuration */
+#define CONFIG_PATH             "/data/nfc-terminal.conf"
+#define CONFIG_TMP_PATH         "/data/nfc-terminal.conf.tmp"
 
 /* Logging macro - printf with immediate flush */
 #define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
@@ -1610,60 +1610,69 @@ static void landing_btn_ev_charging_cb(lv_event_t *e) {
    OTA UPDATE
  *====================*/
 
-/* Load OTA URL from persistent storage */
-static void ota_load_url(void) {
-    FILE *f = fopen(OTA_URL_CONF_PATH, "r");
-    if (f) {
-        char buf[256];
-        if (fgets(buf, sizeof(buf), f)) {
-            /* Strip trailing newline/whitespace */
-            size_t len = strlen(buf);
-            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r' || buf[len-1] == ' '))
-                buf[--len] = '\0';
-            if (len > 0) {
-                strncpy(g_ota_url, buf, sizeof(g_ota_url) - 1);
-                g_ota_url[sizeof(g_ota_url) - 1] = '\0';
-                LOG("OTA: Loaded URL from %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
-            }
+static void config_save(void);
+
+/* Load all settings from unified config file */
+static void config_load(void) {
+    FILE *f = fopen(CONFIG_PATH, "r");
+    if (!f) {
+        LOG("CONF: No config file, saving defaults\n");
+        config_save();
+        return;
+    }
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        /* Strip trailing whitespace */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' || line[len-1] == ' '))
+            line[--len] = '\0';
+        if (len == 0 || line[0] == '#') continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        const char *key = line;
+        const char *val = eq + 1;
+        if (strcmp(key, "ota_url") == 0) {
+            strncpy(g_ota_url, val, sizeof(g_ota_url) - 1);
+            g_ota_url[sizeof(g_ota_url) - 1] = '\0';
+        } else if (strcmp(key, "sound_recording") == 0) {
+            g_sound_recording_enabled = (atoi(val) != 0) ? 1 : 0;
+        } else if (strcmp(key, "mqtt_address") == 0) {
+            strncpy(g_mqtt_address, val, sizeof(g_mqtt_address) - 1);
+            g_mqtt_address[sizeof(g_mqtt_address) - 1] = '\0';
+        } else if (strcmp(key, "mqtt_username") == 0) {
+            strncpy(g_mqtt_username, val, sizeof(g_mqtt_username) - 1);
+            g_mqtt_username[sizeof(g_mqtt_username) - 1] = '\0';
+        } else if (strcmp(key, "mqtt_password") == 0) {
+            strncpy(g_mqtt_password, val, sizeof(g_mqtt_password) - 1);
+            g_mqtt_password[sizeof(g_mqtt_password) - 1] = '\0';
         }
-        fclose(f);
-    } else {
-        LOG("OTA: No saved URL, using default: %s\n", g_ota_url);
     }
+    fclose(f);
+    LOG("CONF: Loaded from %s\n", CONFIG_PATH);
+    LOG("CONF: ota_url=%s mqtt_address=%s sound_recording=%d\n",
+        g_ota_url, g_mqtt_address, g_sound_recording_enabled);
 }
 
-/* Save OTA URL to persistent storage */
-static void ota_save_url(void) {
-    FILE *f = fopen(OTA_URL_CONF_PATH, "w");
-    if (f) {
-        fprintf(f, "%s\n", g_ota_url);
-        fclose(f);
-        LOG("OTA: Saved URL to %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
-    } else {
-        LOG("OTA: Failed to save URL to %s: %s\n", OTA_URL_CONF_PATH, strerror(errno));
+/* Save all settings to unified config file (atomic write) */
+static void config_save(void) {
+    FILE *f = fopen(CONFIG_TMP_PATH, "w");
+    if (!f) {
+        LOG("CONF: Failed to save config: %s\n", strerror(errno));
+        return;
     }
-}
-
-/* Load sound recording setting from persistent storage */
-static void sound_rec_load(void) {
-    FILE *f = fopen(SOUND_REC_CONF_PATH, "r");
-    if (f) {
-        char buf[16];
-        if (fgets(buf, sizeof(buf), f)) {
-            g_sound_recording_enabled = (atoi(buf) != 0) ? 1 : 0;
-        }
-        fclose(f);
-    }
-    LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
-}
-
-/* Save sound recording setting to persistent storage */
-static void sound_rec_save(void) {
-    FILE *f = fopen(SOUND_REC_CONF_PATH, "w");
-    if (f) {
-        fprintf(f, "%d\n", g_sound_recording_enabled);
-        fclose(f);
-    }
+    fprintf(f, "ota_url=%s\n", g_ota_url);
+    fprintf(f, "sound_recording=%d\n", g_sound_recording_enabled);
+    fprintf(f, "mqtt_address=%s\n", g_mqtt_address);
+    fprintf(f, "mqtt_username=%s\n", g_mqtt_username);
+    fprintf(f, "mqtt_password=%s\n", g_mqtt_password);
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    if (rename(CONFIG_TMP_PATH, CONFIG_PATH) != 0)
+        LOG("CONF: Failed to rename config: %s\n", strerror(errno));
+    else
+        LOG("CONF: Saved to %s\n", CONFIG_PATH);
 }
 
 /* Get the installed version from RAUC for the booted slot */
@@ -1895,6 +1904,7 @@ static int check_mqtt_settings_changed(void) {
     }
 
     if (changed) {
+        config_save();
         mqtt_reconnect();
         /* Immediately update MQTT indicator */
         if (g_settings_mqtt_status) {
@@ -1917,7 +1927,7 @@ static void check_ota_url_changed(void) {
     if (strcmp(new_url, g_ota_url) != 0) {
         strncpy(g_ota_url, new_url, sizeof(g_ota_url) - 1);
         g_ota_url[sizeof(g_ota_url) - 1] = '\0';
-        ota_save_url();
+        config_save();
         LOG("OTA: URL changed to: %s\n", g_ota_url);
     }
 }
@@ -1926,7 +1936,7 @@ static void check_ota_url_changed(void) {
 static void sound_rec_cb(lv_event_t *e) {
     lv_obj_t *cb = lv_event_get_target(e);
     g_sound_recording_enabled = lv_obj_has_state(cb, LV_STATE_CHECKED) ? 1 : 0;
-    sound_rec_save();
+    config_save();
     LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
 }
 
@@ -2680,9 +2690,10 @@ static void create_ui(void) {
 
     g_settings_cb_sound_rec = lv_checkbox_create(g_settings_modal);
     lv_checkbox_set_text(g_settings_cb_sound_rec, "");
+    lv_obj_set_style_pad_all(g_settings_cb_sound_rec, 6, LV_PART_INDICATOR);
     lv_obj_set_style_border_color(g_settings_cb_sound_rec, COLOR_LIGHT_GREY, LV_PART_INDICATOR);
     lv_obj_set_style_border_width(g_settings_cb_sound_rec, 2, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(g_settings_cb_sound_rec, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_settings_cb_sound_rec, 6, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(g_settings_cb_sound_rec, THEME_MODAL_BG, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(g_settings_cb_sound_rec, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(g_settings_cb_sound_rec, COLOR_STATUS_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
@@ -2693,7 +2704,7 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_settings_cb_sound_rec, sound_rec_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /*--- Row 6: MAC and IP labels ---*/
-    const int info_row_y = rec_row_y + 52;
+    const int info_row_y = rec_row_y + 54;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
@@ -3313,10 +3324,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Load settings and start OTA background thread */
-    ota_load_url();
+    /* Load persistent config and start OTA background thread */
+    config_load();
     ota_get_installed_version();
-    sound_rec_load();
     if (pthread_create(&g_ota_tid, NULL, ota_thread, NULL) == 0) {
         g_ota_thread_started = 1;
         LOG("OTA: Thread started\n");
