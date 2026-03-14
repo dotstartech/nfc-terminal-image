@@ -179,7 +179,8 @@ static bool g_theme_locked = false;  /* Theme locked after leaving landing page 
 #define COLOR_TEXT       THEME_TEXT
 
 /* Fixed status indicator color - theme-independent */
-#define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32)  /* 0x32CD32 - always same green */
+/* #define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32) */
+#define COLOR_STATUS_GREEN lv_color_make(0x47, 0xD2, 0x47)
 
 /* App/page state*/
 typedef enum {
@@ -1058,8 +1059,9 @@ static void *nfc_thread(void *arg) {
    UI SETUP
  *====================*/
 
-/* Forward declarations for theme functions */
+/* Forward declarations */
 static void apply_theme(void);
+static void config_save(void);
 
 /* Apply current theme colors to all UI elements */
 static void apply_theme(void) {
@@ -1302,7 +1304,6 @@ static void theme_btn_cb(lv_event_t *e) {
     }
     
     lv_obj_t *btn = lv_event_get_target(e);
-    
     if (btn == g_btn_theme_contrast) {
         g_current_theme = THEME_HIGH_CONTRAST;
         g_theme = &g_theme_high_contrast;
@@ -1319,6 +1320,7 @@ static void theme_btn_cb(lv_event_t *e) {
     
     update_theme_button_styles();
     apply_theme();
+    config_save();
 }
 
 /* Animation helper: set object opacity (for use as lv_anim_exec_xcb_t) */
@@ -1610,8 +1612,6 @@ static void landing_btn_ev_charging_cb(lv_event_t *e) {
    OTA UPDATE
  *====================*/
 
-static void config_save(void);
-
 /* Load all settings from unified config file */
 static void config_load(void) {
     FILE *f = fopen(CONFIG_PATH, "r");
@@ -1646,12 +1646,24 @@ static void config_load(void) {
         } else if (strcmp(key, "mqtt_password") == 0) {
             strncpy(g_mqtt_password, val, sizeof(g_mqtt_password) - 1);
             g_mqtt_password[sizeof(g_mqtt_password) - 1] = '\0';
+        } else if (strcmp(key, "theme") == 0) {
+            int t = atoi(val);
+            if (t == THEME_DARK_MOCHA) {
+                g_current_theme = THEME_DARK_MOCHA;
+                g_theme = &g_theme_dark_mocha;
+            } else if (t == THEME_LIGHT_LATTE) {
+                g_current_theme = THEME_LIGHT_LATTE;
+                g_theme = &g_theme_light_latte;
+            } else {
+                g_current_theme = THEME_HIGH_CONTRAST;
+                g_theme = &g_theme_high_contrast;
+            }
         }
     }
     fclose(f);
     LOG("CONF: Loaded from %s\n", CONFIG_PATH);
-    LOG("CONF: ota_url=%s mqtt_address=%s sound_recording=%d\n",
-        g_ota_url, g_mqtt_address, g_sound_recording_enabled);
+    LOG("CONF: ota_url=%s mqtt_address=%s sound_recording=%d theme=%d\n",
+        g_ota_url, g_mqtt_address, g_sound_recording_enabled, g_current_theme);
 }
 
 /* Save all settings to unified config file (atomic write) */
@@ -1666,6 +1678,7 @@ static void config_save(void) {
     fprintf(f, "mqtt_address=%s\n", g_mqtt_address);
     fprintf(f, "mqtt_username=%s\n", g_mqtt_username);
     fprintf(f, "mqtt_password=%s\n", g_mqtt_password);
+    fprintf(f, "theme=%d\n", g_current_theme);
     fflush(f);
     fsync(fileno(f));
     fclose(f);
@@ -3298,7 +3311,13 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
+    /* Load persistent config before UI creation so theme is correct */
+    config_load();
+
     create_ui();
+
+    /* Apply persisted theme after UI is created */
+    apply_theme();
 
     /* Force full screen refresh */
     lv_obj_invalidate(lv_screen_active());
@@ -3324,8 +3343,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Load persistent config and start OTA background thread */
-    config_load();
+    /* Load persistent config (remaining settings) and start OTA background thread */
     ota_get_installed_version();
     if (pthread_create(&g_ota_tid, NULL, ota_thread, NULL) == 0) {
         g_ota_thread_started = 1;
