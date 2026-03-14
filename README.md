@@ -12,6 +12,10 @@ Custom Linux image built with Buildroot for Raspberry Pi Compute Module 4, carri
   <img src="docs/nfc-lvgl-app-7.png" width="200" />
 </p>
 
+## Demo
+
+https://github.com/user-attachments/assets/87c0f37a-04db-4ac4-80f2-3ddab294f5bf.webm
+
 ## Target Hardware
 
 - **Board**: Raspberry Pi Compute Module 4 (**RAM**: 1GB, **Storage**: 8GB eMMC, **WiFi/BT**: None)
