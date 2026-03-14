@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #ifdef DESKTOP_BUILD
 #include <SDL2/SDL.h>
@@ -69,13 +70,13 @@ LV_IMAGE_DECLARE(logo_small);
 
 /* OTA Update */
 #define OTA_CHECK_INTERVAL_SEC  60  /* Check for OTA updates every 60 seconds */
-#define OTA_URL_CONF_PATH       "/data/ota-url.conf"
 #define OTA_DEFAULT_URL         "http://dst-nuc:8088"
 #define OTA_BUNDLE_NAME         "nfc-terminal.raucb"
 #define OTA_VERSION_NAME        "nfc-terminal.version"
 
-/* Sound Recording */
-#define SOUND_REC_CONF_PATH     "/data/sound-recording.conf"
+/* Persistent configuration */
+#define CONFIG_PATH             "/data/nfc-terminal.conf"
+#define CONFIG_TMP_PATH         "/data/nfc-terminal.conf.tmp"
 
 /* Logging macro - printf with immediate flush */
 #define LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
@@ -179,7 +180,8 @@ static bool g_theme_locked = false;  /* Theme locked after leaving landing page 
 #define COLOR_TEXT       THEME_TEXT
 
 /* Fixed status indicator color - theme-independent */
-#define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32)  /* 0x32CD32 - always same green */
+/* #define COLOR_STATUS_GREEN lv_color_make(0x32, 0xCD, 0x32) */
+#define COLOR_STATUS_GREEN lv_color_make(0x47, 0xD2, 0x47)
 
 /* App/page state*/
 typedef enum {
@@ -323,7 +325,7 @@ static lv_obj_t *g_header_mqtt_status = NULL; /* MQTT connection status icon in 
 static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
 static lv_obj_t *g_header_mic_status = NULL;  /* Microphone status icon in header */
 static pid_t g_arecord_pid = -1;              /* PID of arecord process, -1 if not recording */
-static int g_sound_recording_enabled = 0;     /* Sound recording setting (0=disabled, 1=enabled) */
+static int g_sound_rec_enabled = 0;     /* Sound recording setting (0=disabled, 1=enabled) */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -365,9 +367,9 @@ static volatile int g_mqtt_connected = 0;
 static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static char g_device_mac[13] = "";  /* MAC address in format "AABBCCDDEEFF" */
-static char g_mqtt_address[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
-static char g_mqtt_username[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
-static char g_mqtt_password[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
+static char g_mqtt_addr[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
+static char g_mqtt_user[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
+static char g_mqtt_pswd[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
 
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
 static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
@@ -1058,8 +1060,9 @@ static void *nfc_thread(void *arg) {
    UI SETUP
  *====================*/
 
-/* Forward declarations for theme functions */
+/* Forward declarations */
 static void apply_theme(void);
+static void config_save(void);
 
 /* Apply current theme colors to all UI elements */
 static void apply_theme(void) {
@@ -1302,7 +1305,6 @@ static void theme_btn_cb(lv_event_t *e) {
     }
     
     lv_obj_t *btn = lv_event_get_target(e);
-    
     if (btn == g_btn_theme_contrast) {
         g_current_theme = THEME_HIGH_CONTRAST;
         g_theme = &g_theme_high_contrast;
@@ -1319,6 +1321,7 @@ static void theme_btn_cb(lv_event_t *e) {
     
     update_theme_button_styles();
     apply_theme();
+    config_save();
 }
 
 /* Animation helper: set object opacity (for use as lv_anim_exec_xcb_t) */
@@ -1610,60 +1613,95 @@ static void landing_btn_ev_charging_cb(lv_event_t *e) {
    OTA UPDATE
  *====================*/
 
-/* Load OTA URL from persistent storage */
-static void ota_load_url(void) {
-    FILE *f = fopen(OTA_URL_CONF_PATH, "r");
-    if (f) {
-        char buf[256];
-        if (fgets(buf, sizeof(buf), f)) {
-            /* Strip trailing newline/whitespace */
-            size_t len = strlen(buf);
-            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r' || buf[len-1] == ' '))
-                buf[--len] = '\0';
-            if (len > 0) {
-                strncpy(g_ota_url, buf, sizeof(g_ota_url) - 1);
-                g_ota_url[sizeof(g_ota_url) - 1] = '\0';
-                LOG("OTA: Loaded URL from %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
+/* Load all settings from unified config file */
+static void config_load(void) {
+    FILE *f = fopen(CONFIG_PATH, "r");
+    if (!f) {
+        LOG("CONF: No config file, saving defaults\n");
+        config_save();
+        return;
+    }
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        /* Strip trailing whitespace */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' || line[len-1] == ' '))
+            line[--len] = '\0';
+        /* Skip leading whitespace */
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        const char *key = p;
+        const char *val = eq + 1;
+        /* Trim spaces around '=' */
+        while (val[0] == ' ' || val[0] == '\t') val++;
+        if (strcmp(key, "ota_url") == 0) {
+            strncpy(g_ota_url, val, sizeof(g_ota_url) - 1);
+            g_ota_url[sizeof(g_ota_url) - 1] = '\0';
+        } else if (strcmp(key, "sound_rec") == 0) {
+            g_sound_rec_enabled = (atoi(val) != 0) ? 1 : 0;
+        } else if (strcmp(key, "mqtt_addr") == 0) {
+            strncpy(g_mqtt_addr, val, sizeof(g_mqtt_addr) - 1);
+            g_mqtt_addr[sizeof(g_mqtt_addr) - 1] = '\0';
+        } else if (strcmp(key, "mqtt_user") == 0) {
+            strncpy(g_mqtt_user, val, sizeof(g_mqtt_user) - 1);
+            g_mqtt_user[sizeof(g_mqtt_user) - 1] = '\0';
+        } else if (strcmp(key, "mqtt_pswd") == 0) {
+            strncpy(g_mqtt_pswd, val, sizeof(g_mqtt_pswd) - 1);
+            g_mqtt_pswd[sizeof(g_mqtt_pswd) - 1] = '\0';
+        } else if (strcmp(key, "theme") == 0) {
+            int t = atoi(val);
+            if (t == THEME_DARK_MOCHA) {
+                g_current_theme = THEME_DARK_MOCHA;
+                g_theme = &g_theme_dark_mocha;
+            } else if (t == THEME_LIGHT_LATTE) {
+                g_current_theme = THEME_LIGHT_LATTE;
+                g_theme = &g_theme_light_latte;
+            } else {
+                g_current_theme = THEME_HIGH_CONTRAST;
+                g_theme = &g_theme_high_contrast;
             }
         }
-        fclose(f);
-    } else {
-        LOG("OTA: No saved URL, using default: %s\n", g_ota_url);
     }
+    fclose(f);
+    LOG("CONF: Loaded from %s\n", CONFIG_PATH);
+    LOG("CONF: ota_url=%s mqtt_addr=%s sound_rec=%d theme=%d\n",
+        g_ota_url, g_mqtt_addr, g_sound_rec_enabled, g_current_theme);
 }
 
-/* Save OTA URL to persistent storage */
-static void ota_save_url(void) {
-    FILE *f = fopen(OTA_URL_CONF_PATH, "w");
-    if (f) {
-        fprintf(f, "%s\n", g_ota_url);
-        fclose(f);
-        LOG("OTA: Saved URL to %s: %s\n", OTA_URL_CONF_PATH, g_ota_url);
-    } else {
-        LOG("OTA: Failed to save URL to %s: %s\n", OTA_URL_CONF_PATH, strerror(errno));
+/* Save all settings to unified config file (atomic write) */
+static void config_save(void) {
+    int fd = open(CONFIG_TMP_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        LOG("CONF: Failed to save config: %s\n", strerror(errno));
+        return;
     }
-}
-
-/* Load sound recording setting from persistent storage */
-static void sound_rec_load(void) {
-    FILE *f = fopen(SOUND_REC_CONF_PATH, "r");
-    if (f) {
-        char buf[16];
-        if (fgets(buf, sizeof(buf), f)) {
-            g_sound_recording_enabled = (atoi(buf) != 0) ? 1 : 0;
-        }
-        fclose(f);
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        LOG("CONF: Failed to save config: %s\n", strerror(errno));
+        close(fd);
+        return;
     }
-    LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
-}
-
-/* Save sound recording setting to persistent storage */
-static void sound_rec_save(void) {
-    FILE *f = fopen(SOUND_REC_CONF_PATH, "w");
-    if (f) {
-        fprintf(f, "%d\n", g_sound_recording_enabled);
+    fprintf(f, "ota_url=%s\n", g_ota_url);
+    fprintf(f, "sound_rec=%d\n", g_sound_rec_enabled);
+    fprintf(f, "mqtt_addr=%s\n", g_mqtt_addr);
+    fprintf(f, "mqtt_user=%s\n", g_mqtt_user);
+    fprintf(f, "mqtt_pswd=%s\n", g_mqtt_pswd);
+    fprintf(f, "theme=%d\n", g_current_theme);
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        LOG("CONF: Failed to flush/sync config: %s\n", strerror(errno));
         fclose(f);
+        unlink(CONFIG_TMP_PATH);
+        return;
     }
+    fclose(f);
+    if (rename(CONFIG_TMP_PATH, CONFIG_PATH) != 0)
+        LOG("CONF: Failed to rename config: %s\n", strerror(errno));
+    else
+        LOG("CONF: Saved to %s\n", CONFIG_PATH);
 }
 
 /* Get the installed version from RAUC for the booted slot */
@@ -1868,33 +1906,34 @@ static int check_mqtt_settings_changed(void) {
 
     if (g_settings_ta_mqtt) {
         const char *new_addr = lv_textarea_get_text(g_settings_ta_mqtt);
-        if (new_addr && strcmp(new_addr, g_mqtt_address) != 0) {
-            LOG("UI: MQTT address changed from '%s' to '%s'\n", g_mqtt_address, new_addr);
-            strncpy(g_mqtt_address, new_addr, sizeof(g_mqtt_address) - 1);
-            g_mqtt_address[sizeof(g_mqtt_address) - 1] = '\0';
+        if (new_addr && strcmp(new_addr, g_mqtt_addr) != 0) {
+            LOG("UI: MQTT address changed from '%s' to '%s'\n", g_mqtt_addr, new_addr);
+            strncpy(g_mqtt_addr, new_addr, sizeof(g_mqtt_addr) - 1);
+            g_mqtt_addr[sizeof(g_mqtt_addr) - 1] = '\0';
             changed = 1;
         }
     }
     if (g_settings_ta_mqtt_user) {
         const char *new_user = lv_textarea_get_text(g_settings_ta_mqtt_user);
-        if (new_user && strcmp(new_user, g_mqtt_username) != 0) {
+        if (new_user && strcmp(new_user, g_mqtt_user) != 0) {
             LOG("UI: MQTT username changed\n");
-            strncpy(g_mqtt_username, new_user, sizeof(g_mqtt_username) - 1);
-            g_mqtt_username[sizeof(g_mqtt_username) - 1] = '\0';
+            strncpy(g_mqtt_user, new_user, sizeof(g_mqtt_user) - 1);
+            g_mqtt_user[sizeof(g_mqtt_user) - 1] = '\0';
             changed = 1;
         }
     }
     if (g_settings_ta_mqtt_pswd) {
         const char *new_pswd = lv_textarea_get_text(g_settings_ta_mqtt_pswd);
-        if (new_pswd && strcmp(new_pswd, g_mqtt_password) != 0) {
+        if (new_pswd && strcmp(new_pswd, g_mqtt_pswd) != 0) {
             LOG("UI: MQTT password changed\n");
-            strncpy(g_mqtt_password, new_pswd, sizeof(g_mqtt_password) - 1);
-            g_mqtt_password[sizeof(g_mqtt_password) - 1] = '\0';
+            strncpy(g_mqtt_pswd, new_pswd, sizeof(g_mqtt_pswd) - 1);
+            g_mqtt_pswd[sizeof(g_mqtt_pswd) - 1] = '\0';
             changed = 1;
         }
     }
 
     if (changed) {
+        config_save();
         mqtt_reconnect();
         /* Immediately update MQTT indicator */
         if (g_settings_mqtt_status) {
@@ -1917,7 +1956,7 @@ static void check_ota_url_changed(void) {
     if (strcmp(new_url, g_ota_url) != 0) {
         strncpy(g_ota_url, new_url, sizeof(g_ota_url) - 1);
         g_ota_url[sizeof(g_ota_url) - 1] = '\0';
-        ota_save_url();
+        config_save();
         LOG("OTA: URL changed to: %s\n", g_ota_url);
     }
 }
@@ -1925,9 +1964,9 @@ static void check_ota_url_changed(void) {
 /* Sound recording checkbox callback */
 static void sound_rec_cb(lv_event_t *e) {
     lv_obj_t *cb = lv_event_get_target(e);
-    g_sound_recording_enabled = lv_obj_has_state(cb, LV_STATE_CHECKED) ? 1 : 0;
-    sound_rec_save();
-    LOG("CONF: Sound recording %s\n", g_sound_recording_enabled ? "enabled" : "disabled");
+    g_sound_rec_enabled = lv_obj_has_state(cb, LV_STATE_CHECKED) ? 1 : 0;
+    config_save();
+    LOG("CONF: Sound recording %s\n", g_sound_rec_enabled ? "enabled" : "disabled");
 }
 
 /* Update settings modal info labels */
@@ -1945,13 +1984,13 @@ static void update_settings_info(void) {
         lv_label_set_text(g_settings_val_ip, ip);
     }
     if (g_settings_ta_mqtt) {
-        lv_textarea_set_text(g_settings_ta_mqtt, g_mqtt_address);
+        lv_textarea_set_text(g_settings_ta_mqtt, g_mqtt_addr);
     }
     if (g_settings_ta_mqtt_user) {
-        lv_textarea_set_text(g_settings_ta_mqtt_user, g_mqtt_username);
+        lv_textarea_set_text(g_settings_ta_mqtt_user, g_mqtt_user);
     }
     if (g_settings_ta_mqtt_pswd) {
-        lv_textarea_set_text(g_settings_ta_mqtt_pswd, g_mqtt_password);
+        lv_textarea_set_text(g_settings_ta_mqtt_pswd, g_mqtt_pswd);
     }
     /* Sync MQTT status icon with current connection state */
     if (g_settings_mqtt_status) {
@@ -1983,7 +2022,7 @@ static void update_settings_info(void) {
     }
     /* Sound recording checkbox */
     if (g_settings_cb_sound_rec) {
-        if (g_sound_recording_enabled)
+        if (g_sound_rec_enabled)
             lv_obj_add_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
         else
             lv_obj_clear_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
@@ -2680,20 +2719,21 @@ static void create_ui(void) {
 
     g_settings_cb_sound_rec = lv_checkbox_create(g_settings_modal);
     lv_checkbox_set_text(g_settings_cb_sound_rec, "");
+    lv_obj_set_style_pad_all(g_settings_cb_sound_rec, 6, LV_PART_INDICATOR);
     lv_obj_set_style_border_color(g_settings_cb_sound_rec, COLOR_LIGHT_GREY, LV_PART_INDICATOR);
     lv_obj_set_style_border_width(g_settings_cb_sound_rec, 2, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(g_settings_cb_sound_rec, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(g_settings_cb_sound_rec, 6, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(g_settings_cb_sound_rec, THEME_MODAL_BG, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(g_settings_cb_sound_rec, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(g_settings_cb_sound_rec, COLOR_STATUS_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_set_style_border_color(g_settings_cb_sound_rec, COLOR_STATUS_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_align_to(g_settings_cb_sound_rec, lbl_sound_rec, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-    if (g_sound_recording_enabled)
+    if (g_sound_rec_enabled)
         lv_obj_add_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
     lv_obj_add_event_cb(g_settings_cb_sound_rec, sound_rec_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /*--- Row 6: MAC and IP labels ---*/
-    const int info_row_y = rec_row_y + 52;
+    const int info_row_y = rec_row_y + 54;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
@@ -2787,7 +2827,7 @@ static void mqtt_on_connect(void *context, MQTTAsync_successData5 *response) {
     pthread_mutex_lock(&g_mqtt_mutex);
     g_mqtt_connected = 1;
     pthread_mutex_unlock(&g_mqtt_mutex);
-    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", g_mqtt_address);
+    LOG("MQTT: Initial connection successful to %s (MQTT v5.0)\n", g_mqtt_addr);
 }
 
 /* Callback: Called when connected (including auto-reconnect) */
@@ -2895,13 +2935,13 @@ static int mqtt_init(void) {
 
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
-    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_address, client_id,
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_addr, client_id,
                           MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
         LOG("MQTT: Failed to create client, rc=%d\n", rc);
         return -1;
     }
-    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0)\n", g_mqtt_address, client_id);
+    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0)\n", g_mqtt_addr, client_id);
 
     /* Set connected callback - called on connect AND auto-reconnect */
     LOG("MQTT: Setting connected callback...\n");
@@ -2924,8 +2964,8 @@ static int mqtt_init(void) {
     conn_opts.MQTTVersion = MQTTVERSION_5;
     conn_opts.keepAliveInterval = 10;
     conn_opts.cleanstart = 1;  /* MQTT v5.0 uses cleanstart instead of cleansession */
-    conn_opts.username = g_mqtt_username;
-    conn_opts.password = g_mqtt_password;
+    conn_opts.username = g_mqtt_user;
+    conn_opts.password = g_mqtt_pswd;
     conn_opts.connectTimeout = MQTT_TIMEOUT / 1000;
     conn_opts.will = &will_opts;
     conn_opts.onSuccess5 = mqtt_on_connect;
@@ -2955,12 +2995,12 @@ static int mqtt_init(void) {
     return 0;
 }
 
-/* Reconnect MQTT client with current g_mqtt_address */
+/* Reconnect MQTT client with current g_mqtt_addr */
 static void mqtt_reconnect(void) {
-    LOG("MQTT: Reconnecting to new broker address '%s'\n", g_mqtt_address);
+    LOG("MQTT: Reconnecting to new broker address '%s'\n", g_mqtt_addr);
     mqtt_deinit();
     if (mqtt_init() != 0) {
-        LOG("MQTT: Failed to reconnect to '%s'\n", g_mqtt_address);
+        LOG("MQTT: Failed to reconnect to '%s'\n", g_mqtt_addr);
     }
 }
 
@@ -3287,7 +3327,13 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
+    /* Load persistent config before UI creation so theme is correct */
+    config_load();
+
     create_ui();
+
+    /* Apply persisted theme after UI is created */
+    apply_theme();
 
     /* Force full screen refresh */
     lv_obj_invalidate(lv_screen_active());
@@ -3313,10 +3359,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Load settings and start OTA background thread */
-    ota_load_url();
+    /* Start OTA background thread */
     ota_get_installed_version();
-    sound_rec_load();
     if (pthread_create(&g_ota_tid, NULL, ota_thread, NULL) == 0) {
         g_ota_thread_started = 1;
         LOG("OTA: Thread started\n");
@@ -3408,12 +3452,12 @@ int main(int argc, char *argv[]) {
                 /* Update mic icon color */
                 if (g_header_mic_status) {
                     lv_obj_set_style_text_color(g_header_mic_status,
-                        (any_checked_in && g_sound_recording_enabled) ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
+                        (any_checked_in && g_sound_rec_enabled) ? COLOR_STATUS_GREEN : COLOR_GREY, LV_PART_MAIN);
                     lv_obj_invalidate(g_header_mic_status);
                 }
 
                 /* Start/stop recording based on check-in state and setting */
-                if (g_sound_recording_enabled && any_checked_in && g_arecord_pid == -1) {
+                if (g_sound_rec_enabled && any_checked_in && g_arecord_pid == -1) {
                     /* Build filename: <tag_id_no_colons_lc>-YYYYMMDDTHHMMSS.wav */
                     char rec_path[256];
                     {
@@ -3457,7 +3501,7 @@ int main(int argc, char *argv[]) {
                     } else {
                         LOG("MIC: fork() failed: %s\n", strerror(errno));
                     }
-                } else if ((!any_checked_in || !g_sound_recording_enabled) && g_arecord_pid > 0) {
+                } else if ((!any_checked_in || !g_sound_rec_enabled) && g_arecord_pid > 0) {
                     kill(g_arecord_pid, SIGTERM);
                     waitpid(g_arecord_pid, NULL, 0);
                     LOG("MIC: Recording stopped (pid=%d)\n", g_arecord_pid);
