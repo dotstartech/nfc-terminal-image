@@ -60,6 +60,7 @@ LV_IMAGE_DECLARE(logo_small);
 #define FB_DEVICE       "/dev/fb0"
 
 #define MQTT_ADDRESS    "mqbase.io"
+#define MQTT_PORT       8883
 #define MQTT_CLIENT_ID  "nfc-term"
 #define MQTT_USERNAME   "guest"
 #define MQTT_PASSWORD   "guest"
@@ -67,6 +68,9 @@ LV_IMAGE_DECLARE(logo_small);
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
+#define MQTT_TLS_PORT   8883          /* Port 8883 = TLS, anything else = plain TCP */
+#define MQTT_CA_CERT    "/etc/ssl/certs/ca-certificates.crt"
+#define MQTT_TOPIC_PREFIX "guest"     /* Topic prefix for broker ACL (e.g. "guest" -> guest/data/...) */
 
 /* OTA Update */
 #define OTA_CHECK_INTERVAL_SEC  60  /* Check for OTA updates every 60 seconds */
@@ -368,8 +372,10 @@ static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static char g_device_mac[13] = "";  /* MAC address in format "AABBCCDDEEFF" */
 static char g_mqtt_addr[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
+static int  g_mqtt_port = MQTT_PORT;          /* MQTT broker port (8883=TLS, other=plain) */
 static char g_mqtt_user[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
 static char g_mqtt_pswd[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
+static char g_mqtt_prefix[64] = MQTT_TOPIC_PREFIX; /* MQTT topic prefix for broker ACL */
 
 static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
 static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
@@ -1652,6 +1658,12 @@ static void config_load(void) {
         } else if (strcmp(key, "mqtt_pswd") == 0) {
             strncpy(g_mqtt_pswd, val, sizeof(g_mqtt_pswd) - 1);
             g_mqtt_pswd[sizeof(g_mqtt_pswd) - 1] = '\0';
+        } else if (strcmp(key, "mqtt_port") == 0) {
+            int p = atoi(val);
+            if (p > 0 && p <= 65535) g_mqtt_port = p;
+        } else if (strcmp(key, "mqtt_prefix") == 0) {
+            strncpy(g_mqtt_prefix, val, sizeof(g_mqtt_prefix) - 1);
+            g_mqtt_prefix[sizeof(g_mqtt_prefix) - 1] = '\0';
         } else if (strcmp(key, "theme") == 0) {
             int t = atoi(val);
             if (t == THEME_DARK_MOCHA) {
@@ -1668,8 +1680,10 @@ static void config_load(void) {
     }
     fclose(f);
     LOG("CONF: Loaded from %s\n", CONFIG_PATH);
-    LOG("CONF: ota_url=%s mqtt_addr=%s sound_rec=%d theme=%d\n",
-        g_ota_url, g_mqtt_addr, g_sound_rec_enabled, g_current_theme);
+    LOG("CONF: ota_url=%s mqtt_addr=%s:%d sound_rec=%d theme=%d\n",
+        g_ota_url, g_mqtt_addr, g_mqtt_port, g_sound_rec_enabled, g_current_theme);
+    /* Re-save to persist any new keys added by firmware update */
+    config_save();
 }
 
 /* Save all settings to unified config file (atomic write) */
@@ -1688,8 +1702,10 @@ static void config_save(void) {
     fprintf(f, "ota_url=%s\n", g_ota_url);
     fprintf(f, "sound_rec=%d\n", g_sound_rec_enabled);
     fprintf(f, "mqtt_addr=%s\n", g_mqtt_addr);
+    fprintf(f, "mqtt_port=%d\n", g_mqtt_port);
     fprintf(f, "mqtt_user=%s\n", g_mqtt_user);
     fprintf(f, "mqtt_pswd=%s\n", g_mqtt_pswd);
+    fprintf(f, "mqtt_prefix=%s\n", g_mqtt_prefix);
     fprintf(f, "theme=%d\n", g_current_theme);
     if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
         LOG("CONF: Failed to flush/sync config: %s\n", strerror(errno));
@@ -1905,12 +1921,32 @@ static int check_mqtt_settings_changed(void) {
     int changed = 0;
 
     if (g_settings_ta_mqtt) {
-        const char *new_addr = lv_textarea_get_text(g_settings_ta_mqtt);
-        if (new_addr && strcmp(new_addr, g_mqtt_addr) != 0) {
-            LOG("UI: MQTT address changed from '%s' to '%s'\n", g_mqtt_addr, new_addr);
-            strncpy(g_mqtt_addr, new_addr, sizeof(g_mqtt_addr) - 1);
-            g_mqtt_addr[sizeof(g_mqtt_addr) - 1] = '\0';
-            changed = 1;
+        const char *new_val = lv_textarea_get_text(g_settings_ta_mqtt);
+        if (new_val) {
+            /* Parse host:port from textarea */
+            char new_addr[128];
+            int new_port = g_mqtt_port;
+            strncpy(new_addr, new_val, sizeof(new_addr) - 1);
+            new_addr[sizeof(new_addr) - 1] = '\0';
+            char *colon = strrchr(new_addr, ':');
+            if (colon && colon != new_addr) {
+                int all_digits = 1;
+                for (const char *p = colon + 1; *p; p++) {
+                    if (*p < '0' || *p > '9') { all_digits = 0; break; }
+                }
+                if (all_digits && colon[1] != '\0') {
+                    new_port = atoi(colon + 1);
+                    *colon = '\0';
+                }
+            }
+            if (strcmp(new_addr, g_mqtt_addr) != 0 || new_port != g_mqtt_port) {
+                LOG("UI: MQTT address changed from '%s:%d' to '%s:%d'\n",
+                    g_mqtt_addr, g_mqtt_port, new_addr, new_port);
+                strncpy(g_mqtt_addr, new_addr, sizeof(g_mqtt_addr) - 1);
+                g_mqtt_addr[sizeof(g_mqtt_addr) - 1] = '\0';
+                g_mqtt_port = new_port;
+                changed = 1;
+            }
         }
     }
     if (g_settings_ta_mqtt_user) {
@@ -1984,7 +2020,9 @@ static void update_settings_info(void) {
         lv_label_set_text(g_settings_val_ip, ip);
     }
     if (g_settings_ta_mqtt) {
-        lv_textarea_set_text(g_settings_ta_mqtt, g_mqtt_addr);
+        char mqtt_display[160];
+        snprintf(mqtt_display, sizeof(mqtt_display), "%s:%d", g_mqtt_addr, g_mqtt_port);
+        lv_textarea_set_text(g_settings_ta_mqtt, mqtt_display);
     }
     if (g_settings_ta_mqtt_user) {
         lv_textarea_set_text(g_settings_ta_mqtt_user, g_mqtt_user);
@@ -2933,15 +2971,22 @@ static int mqtt_init(void) {
         snprintf(client_id, sizeof(client_id), "%s-%s", MQTT_CLIENT_ID, g_device_mac);
     }
 
+    /* Build broker URL: ssl:// for port 8883, tcp:// otherwise */
+    int use_tls = (g_mqtt_port == MQTT_TLS_PORT);
+    char broker_url[256];
+    snprintf(broker_url, sizeof(broker_url), "%s://%s:%d",
+             use_tls ? "ssl" : "tcp", g_mqtt_addr, g_mqtt_port);
+
     /* Create async client with MQTT v5.0 */
     create_opts.MQTTVersion = MQTTVERSION_5;
-    rc = MQTTAsync_createWithOptions(&g_mqtt_client, g_mqtt_addr, client_id,
+    rc = MQTTAsync_createWithOptions(&g_mqtt_client, broker_url, client_id,
                           MQTTCLIENT_PERSISTENCE_NONE, NULL, &create_opts);
     if (rc != MQTTASYNC_SUCCESS) {
         LOG("MQTT: Failed to create client, rc=%d\n", rc);
         return -1;
     }
-    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0)\n", g_mqtt_addr, client_id);
+    LOG("MQTT: Created async client for %s, clientId=%s (MQTT v5.0, TLS=%d)\n",
+        broker_url, client_id, use_tls);
 
     /* Set connected callback - called on connect AND auto-reconnect */
     LOG("MQTT: Setting connected callback...\n");
@@ -2974,6 +3019,17 @@ static int mqtt_init(void) {
     conn_opts.minRetryInterval = MQTT_RECONNECT_MIN_DELAY;
     conn_opts.maxRetryInterval = MQTT_RECONNECT_MAX_DELAY;
 
+    /* Configure TLS if port is 8883 */
+    MQTTAsync_SSLOptions ssl_opts = MQTTAsync_SSLOptions_initializer;
+    if (use_tls) {
+        ssl_opts.trustStore = MQTT_CA_CERT;
+        ssl_opts.enableServerCertAuth = 1;
+        ssl_opts.verify = 1;
+        ssl_opts.sslVersion = MQTT_SSL_VERSION_TLS_1_2;
+        conn_opts.ssl = &ssl_opts;
+        LOG("MQTT: TLS enabled, CA=%s\n", MQTT_CA_CERT);
+    }
+
     LOG("MQTT: LWT configured - topic=%s, message=%s, qos=%d, retained=%d\n",
            will_opts.topicName, will_opts.message, will_opts.qos, will_opts.retained);
     LOG("MQTT: keepAlive=%ds (LWT fires after ~%ds on ungraceful disconnect)\n",
@@ -2995,12 +3051,12 @@ static int mqtt_init(void) {
     return 0;
 }
 
-/* Reconnect MQTT client with current g_mqtt_addr */
+/* Reconnect MQTT client with current g_mqtt_addr:g_mqtt_port */
 static void mqtt_reconnect(void) {
-    LOG("MQTT: Reconnecting to new broker address '%s'\n", g_mqtt_addr);
+    LOG("MQTT: Reconnecting to '%s:%d'\n", g_mqtt_addr, g_mqtt_port);
     mqtt_deinit();
     if (mqtt_init() != 0) {
-        LOG("MQTT: Failed to reconnect to '%s'\n", g_mqtt_addr);
+        LOG("MQTT: Failed to reconnect to '%s:%d'\n", g_mqtt_addr, g_mqtt_port);
     }
 }
 
@@ -3074,9 +3130,15 @@ found:
     snprintf(g_device_mac, sizeof(g_device_mac), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    /* Build MQTT topics: data/<MAC_NO_COLONS>/nfc and data/<MAC_NO_COLONS>/state */
-    snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%s/nfc", g_device_mac);
-    snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%s/state", g_device_mac);
+    /* Build MQTT topics: <prefix>/data/<MAC>/nfc and <prefix>/data/<MAC>/state */
+    if (g_mqtt_prefix[0] != '\0')
+        snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "%s/data/%s/nfc", g_mqtt_prefix, g_device_mac);
+    else
+        snprintf(g_mqtt_topic, sizeof(g_mqtt_topic), "data/%s/nfc", g_device_mac);
+    if (g_mqtt_prefix[0] != '\0')
+        snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "%s/data/%s/state", g_mqtt_prefix, g_device_mac);
+    else
+        snprintf(g_mqtt_state_topic, sizeof(g_mqtt_state_topic), "data/%s/state", g_device_mac);
 }
 
 /* Publish check-in/check-out state change to data/<TAG-ID> */
@@ -3096,9 +3158,12 @@ static void mqtt_publish_checkin_state(const char *tag_id, bool checked_in) {
     }
     tag_no_colons[j] = '\0';
 
-    /* Build topic: data/<TAG-ID> */
+    /* Build topic: <prefix>/data/<TAG-ID> */
     char topic[128];
-    snprintf(topic, sizeof(topic), "data/%s", tag_no_colons);
+    if (g_mqtt_prefix[0] != '\0')
+        snprintf(topic, sizeof(topic), "%s/data/%s", g_mqtt_prefix, tag_no_colons);
+    else
+        snprintf(topic, sizeof(topic), "data/%s", tag_no_colons);
 
     /* Build JSON payload */
     const char *payload = checked_in ? "{\"state\":\"in\"}" : "{\"state\":\"out\"}";

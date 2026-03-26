@@ -25,8 +25,8 @@ INCLUDES = -I$(CURDIR) \
            -DLV_CONF_INCLUDE_SIMPLE \
            $(shell pkg-config --cflags sdl2)
 
-# Libraries - real NFC (libnfc-nci) and MQTT (paho-mqtt3a)
-LIBS = -L/usr/local/lib -lnfc_nci_linux -lpaho-mqtt3a -lpthread -lm -ludev \
+# Libraries - real NFC (libnfc-nci) and MQTT (paho-mqtt3as with TLS)
+LIBS = -L/usr/local/lib -lnfc_nci_linux -lpaho-mqtt3as -lssl -lcrypto -lpthread -lm -ludev \
        $(shell pkg-config --libs sdl2)
 
 # Find ALL LVGL source files recursively
