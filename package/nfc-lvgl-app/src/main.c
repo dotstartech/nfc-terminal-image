@@ -60,7 +60,7 @@ LV_IMAGE_DECLARE(logo_small);
 #define FB_DEVICE       "/dev/fb0"
 
 #define MQTT_ADDRESS    "mqbase.io"
-#define MQTT_PORT       8883
+#define MQTT_TLS_PORT   8883          /* Port 8883 = TLS, anything else = plain TCP */
 #define MQTT_CLIENT_ID  "nfc-term"
 #define MQTT_USERNAME   "guest"
 #define MQTT_PASSWORD   "guest"
@@ -68,7 +68,6 @@ LV_IMAGE_DECLARE(logo_small);
 #define MQTT_TIMEOUT    3000L  /* 3 seconds */
 #define MQTT_RECONNECT_MIN_DELAY  1   /* Minimum reconnect delay in seconds */
 #define MQTT_RECONNECT_MAX_DELAY  60  /* Maximum reconnect delay in seconds */
-#define MQTT_TLS_PORT   8883          /* Port 8883 = TLS, anything else = plain TCP */
 #define MQTT_CA_CERT    "/etc/ssl/certs/ca-certificates.crt"
 #define MQTT_TOPIC_PREFIX "guest"     /* Topic prefix for broker ACL (e.g. "guest" -> guest/data/...) */
 
@@ -372,13 +371,13 @@ static pthread_mutex_t g_mqtt_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static char g_device_mac[13] = "";  /* MAC address in format "AABBCCDDEEFF" */
 static char g_mqtt_addr[128] = MQTT_ADDRESS;  /* Dynamic MQTT broker address (editable via UI) */
-static int  g_mqtt_port = MQTT_PORT;          /* MQTT broker port (8883=TLS, other=plain) */
+static int  g_mqtt_port = MQTT_TLS_PORT;      /* MQTT broker port (8883=TLS, other=plain) */
 static char g_mqtt_user[64] = MQTT_USERNAME;  /* Dynamic MQTT username (editable via UI) */
 static char g_mqtt_pswd[64] = MQTT_PASSWORD;  /* Dynamic MQTT password (editable via UI) */
 static char g_mqtt_prefix[64] = MQTT_TOPIC_PREFIX; /* MQTT topic prefix for broker ACL */
 
-static char g_mqtt_topic[64] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
-static char g_mqtt_state_topic[64] = "data/unknown/state";  /* Topic: data/<MAC>/state */
+static char g_mqtt_topic[128] = "data/unknown/nfc";  /* Topic: data/<MAC>/nfc */
+static char g_mqtt_state_topic[128] = "data/unknown/state";  /* Topic: data/<MAC>/state */
 
 /* MQTT Message Queue - simple ring buffer for tag events to publish */
 #define MQTT_QUEUE_SIZE 8
@@ -1928,6 +1927,10 @@ static int check_mqtt_settings_changed(void) {
             int new_port = g_mqtt_port;
             strncpy(new_addr, new_val, sizeof(new_addr) - 1);
             new_addr[sizeof(new_addr) - 1] = '\0';
+            /* Strip any protocol scheme prefix (e.g. "tcp://" or "ssl://") */
+            char *scheme_end = strstr(new_addr, "://");
+            if (scheme_end)
+                memmove(new_addr, scheme_end + 3, strlen(scheme_end + 3) + 1);
             char *colon = strrchr(new_addr, ':');
             if (colon && colon != new_addr) {
                 int all_digits = 1;
@@ -1935,7 +1938,9 @@ static int check_mqtt_settings_changed(void) {
                     if (*p < '0' || *p > '9') { all_digits = 0; break; }
                 }
                 if (all_digits && colon[1] != '\0') {
-                    new_port = atoi(colon + 1);
+                    int parsed_port = atoi(colon + 1);
+                    if (parsed_port >= 1 && parsed_port <= 65535)
+                        new_port = parsed_port;
                     *colon = '\0';
                 }
             }
@@ -2595,7 +2600,7 @@ static void create_ui(void) {
     g_settings_ta_mqtt = lv_textarea_create(g_settings_modal);
     lv_textarea_set_text(g_settings_ta_mqtt, "--");
     lv_textarea_set_one_line(g_settings_ta_mqtt, true);
-    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "tcp://host:port");
+    lv_textarea_set_placeholder_text(g_settings_ta_mqtt, "host:port");
     lv_obj_set_size(g_settings_ta_mqtt, 488, textarea_height);
     lv_obj_set_style_text_color(g_settings_ta_mqtt, COLOR_TEXT, LV_PART_MAIN);
     lv_obj_set_style_text_font(g_settings_ta_mqtt, &lv_font_montserrat_28, LV_PART_MAIN);
