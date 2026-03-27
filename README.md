@@ -125,6 +125,7 @@ This configures Buildroot with the external tree and builds everything.
 | `./build.sh distclean` | Remove ALL build artifacts and configuration |
 | `./build.sh rebuild-kernel` | Rebuild only the Linux kernel |
 | `./build.sh rebuild-driver` | Rebuild only the ST7703 display driver |
+| `./build.sh rebuild-demoapp` | Rebuild the nfc-lvgl-app demo |
 | `./build.sh flash /dev/sdX` | Flash built image to SD card or eMMC device |
 | `./build.sh rpiboot` | Start rpiboot for CM4 eMMC programming mode |
 | `./build.sh desktop-build` | Build nfc-lvgl-app for desktop (x86_64) with SDL2 for UI testing |
