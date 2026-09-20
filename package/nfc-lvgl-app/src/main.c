@@ -77,6 +77,10 @@ LV_IMAGE_DECLARE(logo_small);
 #define OTA_BUNDLE_NAME         "nfc-terminal.raucb"
 #define OTA_VERSION_NAME        "nfc-terminal.version"
 
+/* Backlight (LM3630A via lm3630a-gx040hd driver) */
+#define BACKLIGHT_SYSFS   "/sys/class/backlight/backlight-panel/brightness"
+#define BRIGHTNESS_STEPS  10   /* 0..10 -> 0%..100% */
+
 /* Persistent configuration */
 #define CONFIG_PATH             "/data/nfc-terminal.conf"
 #define CONFIG_TMP_PATH         "/data/nfc-terminal.conf.tmp"
@@ -281,6 +285,9 @@ static lv_obj_t *g_settings_btn_reboot = NULL;   /* Reboot button */
 static lv_obj_t *g_settings_lbl_reboot_icon = NULL; /* Reboot button icon label */
 static lv_obj_t *g_settings_val_version = NULL; /* Installed version label */
 static lv_obj_t *g_settings_cb_sound_rec = NULL; /* Sound recording checkbox */
+static lv_obj_t *g_settings_btn_bright_dec = NULL;
+static lv_obj_t *g_settings_btn_bright_inc = NULL;
+static lv_obj_t *g_settings_lbl_bright_val = NULL;
 
 /* Custom keyboard maps for MQTT input (lowercase) */
 static const char * const mqtt_kb_map_lc[] = {
@@ -329,6 +336,7 @@ static lv_obj_t *g_header_nfc_status = NULL;  /* NFC status icon in header */
 static lv_obj_t *g_header_mic_status = NULL;  /* Microphone status icon in header */
 static pid_t g_arecord_pid = -1;              /* PID of arecord process, -1 if not recording */
 static int g_sound_rec_enabled = 0;     /* Sound recording setting (0=disabled, 1=enabled) */
+static int g_brightness_step = 8;       /* 0..BRIGHTNESS_STEPS, default 80% */
 
 static char g_last_tag_id[64] = "";
 static pthread_mutex_t g_ui_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1169,6 +1177,19 @@ static void apply_theme(void) {
         lv_obj_set_style_bg_color(g_settings_cb_sound_rec, THEME_MODAL_BG, LV_PART_INDICATOR);
         lv_obj_set_style_border_color(g_settings_cb_sound_rec, THEME_TEXT_SECONDARY, LV_PART_INDICATOR);
     }
+    if (g_settings_btn_bright_dec) {
+        lv_obj_set_style_bg_color(g_settings_btn_bright_dec, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_settings_btn_bright_dec, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_btn_bright_inc) {
+        lv_obj_set_style_bg_color(g_settings_btn_bright_inc, THEME_BTN_DEFAULT, LV_PART_MAIN);
+        lv_obj_t *lbl = lv_obj_get_child(g_settings_btn_bright_inc, 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, THEME_BTN_TEXT, LV_PART_MAIN);
+    }
+    if (g_settings_lbl_bright_val) {
+        lv_obj_set_style_text_color(g_settings_lbl_bright_val, THEME_TEXT, LV_PART_MAIN);
+    }
     if (g_settings_keyboard) {
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_HEADER, LV_PART_MAIN);
         lv_obj_set_style_bg_color(g_settings_keyboard, THEME_BTN_DEFAULT, LV_PART_ITEMS);
@@ -1634,6 +1655,9 @@ static void config_load(void) {
             g_ota_url[sizeof(g_ota_url) - 1] = '\0';
         } else if (strcmp(key, "sound_rec") == 0) {
             g_sound_rec_enabled = (atoi(val) != 0) ? 1 : 0;
+        } else if (strcmp(key, "brightness") == 0) {
+            int s = atoi(val);
+            if (s >= 0 && s <= BRIGHTNESS_STEPS) g_brightness_step = s;
         } else if (strcmp(key, "mqtt_addr") == 0) {
             strncpy(g_mqtt_addr, val, sizeof(g_mqtt_addr) - 1);
             g_mqtt_addr[sizeof(g_mqtt_addr) - 1] = '\0';
@@ -1665,8 +1689,9 @@ static void config_load(void) {
     }
     fclose(f);
     LOG("CONF: Loaded from %s\n", CONFIG_PATH);
-    LOG("CONF: ota_url=%s mqtt_addr=%s:%d sound_rec=%d theme=%d\n",
-        g_ota_url, g_mqtt_addr, g_mqtt_port, g_sound_rec_enabled, g_current_theme);
+    LOG("CONF: ota_url=%s mqtt_addr=%s:%d sound_rec=%d theme=%d brightness=%d\n",
+        g_ota_url, g_mqtt_addr, g_mqtt_port, g_sound_rec_enabled, g_current_theme,
+        g_brightness_step);
     /* Re-save to persist any new keys added by firmware update */
     config_save();
 }
@@ -1686,6 +1711,7 @@ static void config_save(void) {
     }
     fprintf(f, "ota_url=%s\n", g_ota_url);
     fprintf(f, "sound_rec=%d\n", g_sound_rec_enabled);
+    fprintf(f, "brightness=%d\n", g_brightness_step);
     fprintf(f, "mqtt_addr=%s\n", g_mqtt_addr);
     fprintf(f, "mqtt_port=%d\n", g_mqtt_port);
     fprintf(f, "mqtt_user=%s\n", g_mqtt_user);
@@ -1994,6 +2020,56 @@ static void sound_rec_cb(lv_event_t *e) {
     g_sound_rec_enabled = lv_obj_has_state(cb, LV_STATE_CHECKED) ? 1 : 0;
     config_save();
     LOG("CONF: Sound recording %s\n", g_sound_rec_enabled ? "enabled" : "disabled");
+}
+
+/*====================
+   BACKLIGHT BRIGHTNESS
+ *====================*/
+
+/* Step 0 maps to 4 (not 0) so the display stays faintly visible and the
+ * user can still find the '+' button; step 10 maps to 248, the LM3630A
+ * ceiling at the panel's rated LED current. */
+static int brightness_step_to_level(int step) {
+    if (step <= 0) return 4;
+    if (step >= BRIGHTNESS_STEPS) return 248;
+    return step * 24;
+}
+
+static void brightness_apply(void) {
+#ifndef DESKTOP_BUILD
+    FILE *f = fopen(BACKLIGHT_SYSFS, "w");
+    if (!f) {
+        LOG("BL: cannot open %s: %s\n", BACKLIGHT_SYSFS, strerror(errno));
+        return;
+    }
+    fprintf(f, "%d\n", brightness_step_to_level(g_brightness_step));
+    fclose(f);
+#endif
+    LOG("BL: step %d -> level %d\n", g_brightness_step,
+        brightness_step_to_level(g_brightness_step));
+}
+
+static void brightness_update_ui(void) {
+    if (g_settings_lbl_bright_val)
+        lv_label_set_text_fmt(g_settings_lbl_bright_val, "%d", g_brightness_step * 10);
+    if (g_settings_btn_bright_dec) {
+        if (g_brightness_step <= 0) lv_obj_add_state(g_settings_btn_bright_dec, LV_STATE_DISABLED);
+        else lv_obj_clear_state(g_settings_btn_bright_dec, LV_STATE_DISABLED);
+    }
+    if (g_settings_btn_bright_inc) {
+        if (g_brightness_step >= BRIGHTNESS_STEPS) lv_obj_add_state(g_settings_btn_bright_inc, LV_STATE_DISABLED);
+        else lv_obj_clear_state(g_settings_btn_bright_inc, LV_STATE_DISABLED);
+    }
+}
+
+static void brightness_btn_cb(lv_event_t *e) {
+    int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    int s = g_brightness_step + delta;
+    if (s < 0 || s > BRIGHTNESS_STEPS) return;
+    g_brightness_step = s;
+    brightness_apply();
+    brightness_update_ui();
+    config_save();
 }
 
 /* Update settings modal info labels */
@@ -2498,85 +2574,16 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(lbl_close, &fa_solid_48, LV_PART_MAIN);
     lv_obj_center(lbl_close);
 
-    /* Row layout constants */
-    const int row_start_y = 94;
+    /* Row layout constants (first row starts below the 96px close button) */
+    const int row_start_y = 112;
     const int row_gap = 72;
-    const int textarea_height = 48;
-    const int theme_btn_size = 76;
-    const int theme_btn_gap = 16;
+    const int textarea_height = 52;
+    const int btn_size = 72;
+    const int btn_gap = 16;
+    const int theme_btn_x0 = 700 / 2 - btn_size / 2 - btn_gap - btn_size;   /* in the middle of the row */
 
-    /*--- Row 1: Color Theme buttons ---*/
-    const int theme_row_y = row_start_y - 2;
-
-    /* "Theme:" label */
-    lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
-    lv_label_set_text(lbl_theme_key, "Theme");
-    lv_obj_set_style_text_color(lbl_theme_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_theme_key, &lv_font_montserrat_28, LV_PART_MAIN);
-    lv_obj_align(lbl_theme_key, LV_ALIGN_TOP_LEFT, 20, theme_row_y + (theme_btn_size - 28) / 2);
-
-    /* Button 1: High Contrast - centered group */
-    g_btn_theme_contrast = lv_button_create(g_settings_modal);
-    lv_obj_set_size(g_btn_theme_contrast, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_TOP_MID, -(theme_btn_size + theme_btn_gap), theme_row_y);
-    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
-    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
-    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
-    lv_label_set_text(lbl_contrast, FA_ICON_CIRCLE_HALF);
-    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_contrast, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_center(lbl_contrast);
-
-    /* Button 2: Dark (Mocha) */
-    g_btn_theme_dark = lv_button_create(g_settings_modal);
-    lv_obj_set_size(g_btn_theme_dark, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_dark, LV_ALIGN_TOP_MID, 0, theme_row_y);
-    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
-    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
-    lv_label_set_text(lbl_dark, FA_ICON_MOON);
-    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_dark, &fa_solid_48, LV_PART_MAIN);
-    lv_obj_center(lbl_dark);
-
-    /* Button 3: Light (Latte) */
-    g_btn_theme_light = lv_button_create(g_settings_modal);
-    lv_obj_set_size(g_btn_theme_light, theme_btn_size, theme_btn_size);
-    lv_obj_align(g_btn_theme_light, LV_ALIGN_TOP_MID, theme_btn_size + theme_btn_gap, theme_row_y);
-    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
-    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
-    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
-    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
-    lv_label_set_text(lbl_light, FA_ICON_SUN);
-    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
-    lv_obj_center(lbl_light);
-
-    /*--- Row 2: MQTT Address + connection indicator ---*/
-    const int mqtt_row_y = theme_row_y + theme_btn_size + row_gap - 52 + 6;
+    /*--- Row 1: MQTT Address + connection indicator ---*/
+    const int mqtt_row_y = row_start_y;
     lv_obj_t *lbl_mqtt_key = lv_label_create(g_settings_modal);
     lv_label_set_text(lbl_mqtt_key, "MQTT");
     lv_obj_set_style_text_color(lbl_mqtt_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
@@ -2618,7 +2625,7 @@ static void create_ui(void) {
     lv_obj_set_style_border_width(g_settings_mqtt_status, 0, LV_PART_MAIN);
     lv_obj_align_to(g_settings_mqtt_status, g_settings_ta_mqtt, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
 
-    /*--- Row 3: MQTT User + Password ---*/
+    /*--- Row 2: MQTT User + Password ---*/
     const int creds_row_y = mqtt_row_y + row_gap;
 
     lv_obj_t *lbl_user_key = lv_label_create(g_settings_modal);
@@ -2684,7 +2691,7 @@ static void create_ui(void) {
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(g_settings_ta_mqtt_pswd, mqtt_kb_ready_cb, LV_EVENT_READY, NULL);
 
-    /*--- Row 4: OTA URL + Reboot button ---*/
+    /*--- Row 3: OTA URL + Reboot button ---*/
     const int ota_row_y = creds_row_y + row_gap;
 
     lv_obj_t *lbl_ota_key = lv_label_create(g_settings_modal);
@@ -2720,7 +2727,7 @@ static void create_ui(void) {
 
     /* Reboot button (starts disabled) */
     g_settings_btn_reboot = lv_button_create(g_settings_modal);
-    lv_obj_set_size(g_settings_btn_reboot, 72, 64);
+    lv_obj_set_size(g_settings_btn_reboot, btn_size, btn_size);
     lv_obj_set_style_bg_color(g_settings_btn_reboot, THEME_BTN_DEFAULT, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(g_settings_btn_reboot, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(g_settings_btn_reboot, 8, LV_PART_MAIN);
@@ -2737,8 +2744,137 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(g_settings_lbl_reboot_icon, THEME_TEXT_SECONDARY, LV_PART_MAIN);
     lv_obj_center(g_settings_lbl_reboot_icon);
 
-    /*--- Row 5: Sound Recording checkbox ---*/
-    const int rec_row_y = ota_row_y + row_gap - 8;
+    /*--- Row 4: Color Theme buttons ---*/
+    const int theme_row_y = ota_row_y + row_gap - 6;
+
+    lv_obj_t *lbl_theme_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_theme_key, "Theme");
+    lv_obj_set_style_text_color(lbl_theme_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_theme_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_theme_key, LV_ALIGN_TOP_LEFT, 20, theme_row_y + (btn_size - 28) / 2);
+
+    /* Button 1: High Contrast */
+    g_btn_theme_contrast = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_contrast, btn_size, btn_size);
+    lv_obj_align(g_btn_theme_contrast, LV_ALIGN_TOP_LEFT, theme_btn_x0, theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_contrast, COLOR_YELLOW, LV_PART_MAIN);  /* Selected by default */
+    lv_obj_set_style_bg_opa(g_btn_theme_contrast, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_contrast, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_contrast, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_contrast, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_contrast = lv_label_create(g_btn_theme_contrast);
+    lv_label_set_text(lbl_contrast, FA_ICON_CIRCLE_HALF);
+    lv_obj_set_style_text_color(lbl_contrast, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_contrast, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_contrast);
+
+    /* Button 2: Dark (Mocha) */
+    g_btn_theme_dark = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_dark, btn_size, btn_size);
+    lv_obj_align(g_btn_theme_dark, LV_ALIGN_TOP_LEFT, theme_btn_x0 + btn_size + btn_gap, theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_dark, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_dark, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_dark, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_dark, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_dark, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_dark = lv_label_create(g_btn_theme_dark);
+    lv_label_set_text(lbl_dark, FA_ICON_MOON);
+    lv_obj_set_style_text_color(lbl_dark, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dark, &fa_solid_48, LV_PART_MAIN);
+    lv_obj_center(lbl_dark);
+
+    /* Button 3: Light (Latte) */
+    g_btn_theme_light = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_btn_theme_light, btn_size, btn_size);
+    lv_obj_align(g_btn_theme_light, LV_ALIGN_TOP_LEFT, theme_btn_x0 + 2 * (btn_size + btn_gap), theme_row_y);
+    lv_obj_set_style_bg_color(g_btn_theme_light, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_btn_theme_light, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(g_btn_theme_light, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_btn_theme_light, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_btn_theme_light, theme_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_light = lv_label_create(g_btn_theme_light);
+    lv_label_set_text(lbl_light, FA_ICON_SUN);
+    lv_obj_set_style_text_color(lbl_light, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_light, &fa_regular_48, LV_PART_MAIN);
+    lv_obj_center(lbl_light);
+
+    /*--- Row 5: Brightness  [-]  NN  [+]  (same button size as theme row) ---*/
+    const int bright_row_y = theme_row_y + btn_size + btn_gap;
+    const int bright_lbl_y = bright_row_y + (btn_size - 28) / 2;
+
+    lv_obj_t *lbl_bright_key = lv_label_create(g_settings_modal);
+    lv_label_set_text(lbl_bright_key, "Brightness");
+    lv_obj_set_style_text_color(lbl_bright_key, COLOR_LIGHT_GREY, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_bright_key, &lv_font_montserrat_28, LV_PART_MAIN);
+    lv_obj_align(lbl_bright_key, LV_ALIGN_TOP_LEFT, 20, bright_lbl_y);
+
+    g_settings_btn_bright_dec = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_settings_btn_bright_dec, btn_size, btn_size);
+    lv_obj_align(g_settings_btn_bright_dec, LV_ALIGN_TOP_LEFT, theme_btn_x0, bright_row_y);
+    lv_obj_set_style_bg_color(g_settings_btn_bright_dec, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_bright_dec, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_bright_dec, LV_OPA_40, LV_PART_MAIN | LV_STATE_DISABLED);
+    lv_obj_set_style_radius(g_settings_btn_bright_dec, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_btn_bright_dec, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_settings_btn_bright_dec, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_settings_btn_bright_dec, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_dec, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_dec, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_dec, brightness_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+    lv_obj_t *lbl_dec = lv_label_create(g_settings_btn_bright_dec);
+    lv_label_set_text(lbl_dec, "-");
+    lv_obj_set_style_text_color(lbl_dec, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_dec, &lv_font_montserrat_48, LV_PART_MAIN);
+    lv_obj_center(lbl_dec);
+
+    /* Value label occupies the middle button slot so all three rows line up */
+    g_settings_lbl_bright_val = lv_label_create(g_settings_modal);
+    lv_obj_set_width(g_settings_lbl_bright_val, btn_size);
+    lv_obj_set_style_text_align(g_settings_lbl_bright_val, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(g_settings_lbl_bright_val, COLOR_TEXT, LV_PART_MAIN);
+    lv_obj_set_style_text_font(g_settings_lbl_bright_val, &lv_font_montserrat_36, LV_PART_MAIN);
+    lv_obj_align(g_settings_lbl_bright_val, LV_ALIGN_TOP_LEFT,
+                 theme_btn_x0 + btn_size + btn_gap, bright_row_y + (btn_size - 36) / 2);
+
+    g_settings_btn_bright_inc = lv_button_create(g_settings_modal);
+    lv_obj_set_size(g_settings_btn_bright_inc, btn_size, btn_size);
+    lv_obj_align(g_settings_btn_bright_inc, LV_ALIGN_TOP_LEFT,
+                 theme_btn_x0 + 2 * (btn_size + btn_gap), bright_row_y);
+    lv_obj_set_style_bg_color(g_settings_btn_bright_inc, COLOR_GREY, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_bright_inc, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(g_settings_btn_bright_inc, LV_OPA_40, LV_PART_MAIN | LV_STATE_DISABLED);
+    lv_obj_set_style_radius(g_settings_btn_bright_inc, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(g_settings_btn_bright_inc, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(g_settings_btn_bright_inc, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(g_settings_btn_bright_inc, btn_press_effect_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_inc, btn_press_effect_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_inc, btn_press_effect_cb, LV_EVENT_PRESS_LOST, NULL);
+    lv_obj_add_event_cb(g_settings_btn_bright_inc, brightness_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)+1);
+    lv_obj_t *lbl_inc = lv_label_create(g_settings_btn_bright_inc);
+    lv_label_set_text(lbl_inc, "+");
+    lv_obj_set_style_text_color(lbl_inc, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_inc, &lv_font_montserrat_48, LV_PART_MAIN);
+    lv_obj_center(lbl_inc);
+
+    brightness_update_ui();
+
+    /*--- Row 6: Sound Recording checkbox ---*/
+    const int rec_row_y = bright_row_y + btn_size + 24;
 
     lv_obj_t *lbl_sound_rec = lv_label_create(g_settings_modal);
     lv_label_set_text(lbl_sound_rec, "Sound Recording");
@@ -2761,8 +2897,8 @@ static void create_ui(void) {
         lv_obj_add_state(g_settings_cb_sound_rec, LV_STATE_CHECKED);
     lv_obj_add_event_cb(g_settings_cb_sound_rec, sound_rec_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    /*--- Row 6: MAC and IP labels ---*/
-    const int info_row_y = rec_row_y + 54;
+    /*--- Row 7: MAC and IP labels ---*/
+    const int info_row_y = rec_row_y + 56;
 
     /* MAC key label */
     lv_obj_t *lbl_mac_key = lv_label_create(g_settings_modal);
@@ -2792,8 +2928,8 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(g_settings_val_ip, &lv_font_montserrat_28, LV_PART_MAIN);
     lv_obj_align_to(g_settings_val_ip, lbl_ip_key, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    /*--- Row 7: Version label ---*/
-    const int ver_row_y = info_row_y + 52;
+    /*--- Row 8: Version label ---*/
+    const int ver_row_y = info_row_y + 56;
 
     lv_obj_t *lbl_ver_key = lv_label_create(g_settings_modal);
     lv_label_set_text(lbl_ver_key, "Image");
@@ -3385,6 +3521,7 @@ int main(int argc, char *argv[]) {
 
     /* Load persistent config before UI creation so theme is correct */
     config_load();
+    brightness_apply();
 
     create_ui();
 
