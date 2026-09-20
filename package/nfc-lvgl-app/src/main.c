@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdatomic.h>
+#include <math.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 
@@ -80,6 +81,8 @@ LV_IMAGE_DECLARE(logo_small);
 /* Backlight (LM3630A via lm3630a-gx040hd driver) */
 #define BACKLIGHT_SYSFS   "/sys/class/backlight/backlight-panel/brightness"
 #define BRIGHTNESS_STEPS  10   /* 0..10 -> 0%..100% */
+#define BRIGHTNESS_LEVEL_MIN  4    /* faintly visible so the '+' button can still be found */
+#define BRIGHTNESS_LEVEL_MAX  248  /* LM3630A ceiling at the panel's rated LED current */
 
 /* Persistent configuration */
 #define CONFIG_PATH             "/data/nfc-terminal.conf"
@@ -2026,13 +2029,22 @@ static void sound_rec_cb(lv_event_t *e) {
    BACKLIGHT BRIGHTNESS
  *====================*/
 
-/* Step 0 maps to 4 (not 0) so the display stays faintly visible and the
- * user can still find the '+' button; step 10 maps to 248, the LM3630A
- * ceiling at the panel's rated LED current. */
+/* CIE 1931: perceived lightness L* (0..100) -> relative luminance Y (0..1) */
+static double cie_lightness_to_luminance(double lstar) {
+    if (lstar <= 8.0) return lstar / 903.3;
+    double t = (lstar + 16.0) / 116.0;
+    return t * t * t;
+}
+
+/* The LM3630A runs in linear mapping mode (CTRL reg 0x00 bit LINEAR_A), so the
+ * level is proportional to luminance. Steps are spaced evenly in L* instead so
+ * every tap is perceived as the same change in brightness. */
 static int brightness_step_to_level(int step) {
-    if (step <= 0) return 4;
-    if (step >= BRIGHTNESS_STEPS) return 248;
-    return step * 24;
+    if (step <= 0) return BRIGHTNESS_LEVEL_MIN;
+    if (step >= BRIGHTNESS_STEPS) return BRIGHTNESS_LEVEL_MAX;
+    double lstar_min = 116.0 * cbrt((double)BRIGHTNESS_LEVEL_MIN / BRIGHTNESS_LEVEL_MAX) - 16.0;
+    double lstar = lstar_min + (100.0 - lstar_min) * step / BRIGHTNESS_STEPS;
+    return (int)lround(cie_lightness_to_luminance(lstar) * BRIGHTNESS_LEVEL_MAX);
 }
 
 static void brightness_apply(void) {

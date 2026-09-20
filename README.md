@@ -372,6 +372,49 @@ LVGL Input Device (LV_INDEV_TYPE_POINTER)
 LVGL Event System (LV_EVENT_CLICKED, etc.)
 ```
 
+## Display Brightness (LM3630A Backlight)
+
+The panel backlight is driven by a TI LM3630A on I2C0 (`@0x36`), exposed as
+`/sys/class/backlight/backlight-panel/brightness` (0-255). The Settings menu
+offers 10 brightness steps (0-100 %) which the app translates into a register
+level and persists as `brightness=<step>` in `/data/nfc-terminal.conf`.
+
+### Why a linear mapping feels wrong
+
+The chip runs in *linear mapping mode* (control register `0x00`, bit `LINEAR_A`
+set), so the register value is proportional to LED current - and therefore to
+luminance. Human brightness perception is not linear in luminance: it follows
+roughly a cube-root law. With an evenly spaced level table (`4, 24, 48, …, 248`)
+the step from 0 % to 10 % looked like a huge jump while 90 % to 100 % was barely
+noticeable.
+
+### Solution: CIE 1931 lightness curve
+
+The steps are spaced evenly in *perceived lightness* $L^*$ (0-100), which the
+CIE 1931 standard relates to relative luminance $Y$ (0-1) as:
+
+$$
+Y = \begin{cases}
+\dfrac{L^*}{903.3} & L^* \le 8 \\[2ex]
+\left(\dfrac{L^* + 16}{116}\right)^3 & L^* > 8
+\end{cases}
+$$
+
+The register level is then $\mathrm{level} = \mathrm{round}(Y \cdot 248)$, where
+248 is the LM3630A ceiling at the panel's rated LED current. Step 0 stays at
+level 4 (faintly visible so the `+` button can still be found) and is placed on
+the same curve - its $L^*_{min}$ is computed from the inverse formula
+$L^* = 116\sqrt[3]{Y} - 16$, and the remaining steps interpolate linearly
+between $L^*_{min}$ and 100. This yields the near-exponential level table:
+
+| Step | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|------|---|---|---|---|---|---|---|---|---|---|----|
+| Level | 4 | 9 | 16 | 27 | 42 | 61 | 85 | 116 | 153 | 196 | 248 |
+
+Each tap on `-`/`+` is now perceived as roughly the same change in brightness.
+The implementation lives in `brightness_step_to_level()` in
+`package/nfc-lvgl-app/src/main.c`.
+
 ## MQTT Client
 
 The nfc-lvgl-app uses the Eclipse Paho C MQTT library with asynchronous operation and automatic reconnection.
@@ -437,7 +480,7 @@ arecord -D dmic -c1 -r 24000 -f S16_LE -t wav -V mono -v recording.wav
 
 ## OTA Updates (RAUC)
 
-The image uses [RAUC](https://rauc.io/) for robust over-the-air (OTA) updates with an A/B partition scheme. Updates are atomic — the system either boots the new version or automatically stays on the old one.
+The image uses [RAUC](https://rauc.io/) for robust over-the-air (OTA) updates with an A/B partition scheme. Updates are atomic - the system either boots the new version or automatically stays on the old one.
 
 ### Partition Layout
 
@@ -460,15 +503,15 @@ The image uses [RAUC](https://rauc.io/) for robust over-the-air (OTA) updates wi
 ```
 
 - **boot**: Shared boot partition with firmware (`start4.elf`, `fixup4.dat`), boot state (`boot.ini`, `cmdline.txt`), and a copy of the **active** slot's kernel, DTB, and overlays. The boot partition is 64 MB to accommodate the kernel image (~22 MB) plus a temporary copy during RAUC updates.
-- **rootfs_a / rootfs_b**: A/B root filesystem slots. Each slot contains the complete rootfs **plus** the kernel (`/boot/Image`), device tree (`/boot/bcm2711-rpi-cm4.dtb`), and overlays (`/boot/overlays/`). This makes RAUC bundles fully self-contained — a single rootfs update carries the matching kernel. The factory image populates slot A; slot B is left empty for the first OTA update.
+- **rootfs_a / rootfs_b**: A/B root filesystem slots. Each slot contains the complete rootfs **plus** the kernel (`/boot/Image`), device tree (`/boot/bcm2711-rpi-cm4.dtb`), and overlays (`/boot/overlays/`). This makes RAUC bundles fully self-contained - a single rootfs update carries the matching kernel. The factory image populates slot A; slot B is left empty for the first OTA update.
 - **data**: Persistent partition mounted at `/data`, stores `rauc.status`, `ota-url.conf`, and survives updates.
 
 ### How A/B Updates Work
 
-1. The RPi CM4 firmware reads `cmdline.txt` from the boot partition at power-on — this selects which rootfs partition to mount via the `root=` parameter.
+1. The RPi CM4 firmware reads `cmdline.txt` from the boot partition at power-on - this selects which rootfs partition to mount via the `root=` parameter.
 2. RAUC detects the currently booted slot by reading `rauc.slot=A|B` from `/proc/cmdline`.
 3. When an update bundle is installed, RAUC writes the new rootfs image to the **inactive** slot.
-4. RAUC calls the custom boot handler (`rauc-boot-handler`) to set the new slot as primary — this rewrites `cmdline.txt` to point to the new partition **and** syncs the kernel (`Image`), device tree (`bcm2711-rpi-cm4.dtb`), and overlays from the new slot's `/boot/` directory to the shared boot partition.
+4. RAUC calls the custom boot handler (`rauc-boot-handler`) to set the new slot as primary - this rewrites `cmdline.txt` to point to the new partition **and** syncs the kernel (`Image`), device tree (`bcm2711-rpi-cm4.dtb`), and overlays from the new slot's `/boot/` directory to the shared boot partition.
 5. On reboot, the firmware boots into the updated slot with the matching kernel and device trees.
 6. An init script (`S99rauc`) calls `rauc status mark-good` after a successful boot, confirming the update.
 
@@ -522,8 +565,8 @@ cd board/nfc-terminal/rauc
 ```
 
 This creates `board/nfc-terminal/rauc/certs/`:
-- `ca.key.pem` / `ca.cert.pem` — Certificate Authority (keyring)
-- `signing.key.pem` / `signing.cert.pem` — Bundle signing key/cert
+- `ca.key.pem` / `ca.cert.pem` - Certificate Authority (keyring)
+- `signing.key.pem` / `signing.cert.pem` - Bundle signing key/cert
 
 > **Security**: The `certs/` directory is gitignored. Never commit private keys. For production, use a proper PKI with an HSM or secure key storage.
 
@@ -609,11 +652,11 @@ reboot
 Host the bundle on an HTTP server and install directly from the URL:
 
 ```bash
-# On the build host — serve bundles
+# On the build host - serve bundles
 cd buildroot/output/images
 python3 -m http.server 8080
 
-# On the device — install from network
+# On the device - install from network
 rauc install http://<host-ip>:8080/nfc-terminal.raucb
 ```
 
@@ -654,7 +697,7 @@ rauc status mark-bad
 
 ```bash
 # 1. Flash the factory image to eMMC
-# 2. Boot the device — it starts on slot A
+# 2. Boot the device - it starts on slot A
 
 # On device:
 rauc status
