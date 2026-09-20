@@ -60,10 +60,17 @@ cat > ${TARGET_DIR}/etc/modules-load.d/display.conf << 'EOF'
 # DRM/VC4 graphics stack for Raspberry Pi
 drm
 vc4
+# LM3630A I2C backlight driver (wall-panel rev >= 5)
+lm3630a-gx040hd
 # ST7703 GX040HD Display Panel Driver
 panel-sitronix-st7703-gx040hd
 # EDT FT5x06 touchscreen driver (supports FT6336U)
 edt_ft5x06
+EOF
+
+# Load on-board WiFi driver at boot (CM4 wireless variant; harmless without radio)
+cat > ${TARGET_DIR}/etc/modules-load.d/wifi.conf << 'EOF'
+brcmfmac
 EOF
 
 # Load I2S MEMS microphone driver at boot (Adafruit SPH0645LM4H)
@@ -170,27 +177,18 @@ EOF
 
 # Load NFC kernel driver at boot
 cat > ${TARGET_DIR}/etc/modules-load.d/nfc.conf << 'EOF'
-# PN5xx NFC I2C driver (creates /dev/pn544)
-pn5xx_i2c
+# NXP PN7160 NFC I2C driver (creates /dev/nxpnfc)
+nxpnfc_i2c
 EOF
 
 # Create udev rule for NFC device permissions
 cat > ${TARGET_DIR}/etc/udev/rules.d/99-nfc.rules << 'EOF'
-# PN5xx NFC device - allow all users to access
-KERNEL=="pn544", MODE="0666"
+# NXP NFC device - allow all users to access
+KERNEL=="nxpnfc", MODE="0666"
 EOF
 
-# Configure libnfc-nci to use the correct device node (/dev/pn544)
-# The pn5xx kernel driver creates /dev/pn544, not /dev/pn54x
-if [ -e ${TARGET_DIR}/etc/libnfc-nxp-init.conf ]; then
-    # Add device node configuration if not present
-    if ! grep -q "NXP_NFC_DEV_NODE" ${TARGET_DIR}/etc/libnfc-nxp-init.conf; then
-        echo "" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
-        echo "###############################################################################" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
-        echo "# NFC Device Node (created by pn5xx_i2c kernel driver)" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
-        echo "NXP_NFC_DEV_NODE=\"/dev/pn544\"" >> ${TARGET_DIR}/etc/libnfc-nxp-init.conf
-    fi
-fi
+# Note: libnfc-nci NCI2.0 defaults to /dev/nxpnfc which matches the nxpnfc
+# kernel driver, no device node override needed.
 
 # Create NFC console wrapper script for tty1
 # Only create if nfc-lvgl-app package hasn't installed its own version
@@ -202,7 +200,7 @@ cat > ${TARGET_DIR}/usr/bin/nfc-console << 'NFCEOF'
 # NFC Console - runs nfcDemoApp on the display (tty1)
 #
 
-NFC_DEV="/dev/pn544"
+NFC_DEV="/dev/nxpnfc"
 
 # Wait for NFC device to appear (max 30 seconds)
 echo "Waiting for NFC hardware..."
@@ -351,6 +349,7 @@ chmod 755 ${TARGET_DIR}/etc/init.d/S99zz-reboot-guard
 
 # Copy boot splash logo to target
 mkdir -p ${TARGET_DIR}/usr/share/images
+#cp ${BOARD_DIR}/logo-dfs.png ${TARGET_DIR}/usr/share/images/splash.png
 cp ${BOARD_DIR}/logo-mid.png ${TARGET_DIR}/usr/share/images/splash.png
 
 # Create early splash screen init script - runs as early as possible
@@ -441,8 +440,17 @@ auto eth0
 iface eth0 inet dhcp
 
 # USB Ethernet - usb0 naming (common for USB NICs)
-auto usb0
+# allow-hotplug (not auto): the SMSC95xx enumerates after S40network runs;
+# the udev rule in 70-usb-ethernet.rules triggers ifup when it appears.
+allow-hotplug usb0
 iface usb0 inet dhcp
+
+# On-board WiFi (CM4 with wireless). Credentials live on the persistent
+# /data partition so they survive OTA updates; see S39wifi-conf.
+allow-hotplug wlan0
+iface wlan0 inet dhcp
+    pre-up wpa_supplicant -B -i wlan0 -c /data/wpa_supplicant.conf -P /run/wpa_supplicant.wlan0.pid
+    post-down kill $(cat /run/wpa_supplicant.wlan0.pid 2>/dev/null) 2>/dev/null || true
 
 # Allow hotplug for any additional interfaces
 allow-hotplug eth1
@@ -452,11 +460,42 @@ allow-hotplug enx*
 iface enx* inet dhcp
 EOF
 
-# Create udev rule to rename LAN9500A to usb0 consistently
+# Create udev rules: rename LAN9500A to usb0 and bring hotplug NICs up via DHCP.
+# Both usb0 and wlan0 appear asynchronously after S40network has already run.
 cat > ${TARGET_DIR}/etc/udev/rules.d/70-usb-ethernet.rules << 'EOF'
-# Rename LAN9500A (SMSC95xx) USB Ethernet to usb0
-SUBSYSTEM=="net", ACTION=="add", DRIVERS=="smsc95xx", NAME="usb0"
+# Rename LAN9500A (SMSC95xx) USB Ethernet to usb0 and bring it up
+SUBSYSTEM=="net", ACTION=="add", DRIVERS=="smsc95xx", NAME="usb0", RUN+="/sbin/ifup usb0"
+# On-board WiFi: bring up once brcmfmac has created the interface
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="wlan0", RUN+="/sbin/ifup wlan0"
 EOF
+
+# First-boot WiFi config template on /data (edit SSID/PSK on the device, or
+# pre-seed by mounting the data partition after flashing).
+cat > ${TARGET_DIR}/etc/init.d/S39wifi-conf << 'WIFIEOF'
+#!/bin/sh
+# Seed /data/wpa_supplicant.conf on first boot; wlan0 ifup needs it to exist.
+case "$1" in
+    start)
+        if [ ! -f /data/wpa_supplicant.conf ]; then
+            cat > /data/wpa_supplicant.conf << 'EOF'
+ctrl_interface=/run/wpa_supplicant
+update_config=1
+country=DE
+
+# Add your network below, e.g.:
+# network={
+#     ssid="MyNetwork"
+#     psk="MyPassword"
+# }
+EOF
+            chmod 600 /data/wpa_supplicant.conf
+        fi
+        ;;
+    *) ;;
+esac
+exit 0
+WIFIEOF
+chmod 755 ${TARGET_DIR}/etc/init.d/S39wifi-conf
 
 # Create /boot directory and add to fstab for boot partition mounting
 mkdir -p ${TARGET_DIR}/boot
@@ -561,6 +600,10 @@ chmod 755 ${TARGET_DIR}/usr/lib/rauc/rauc-boot-handler
 # Create mount points for boot and data partitions
 mkdir -p ${TARGET_DIR}/boot
 mkdir -p ${TARGET_DIR}/data
+
+# Carry config.txt inside each rootfs slot so RAUC updates can sync it to
+# the shared FAT boot partition (rauc-boot-handler write_cmdline).
+install -m 0644 ${BOARD_DIR}/config.txt ${TARGET_DIR}/boot/config.txt
 
 # Add fstab entries for boot and data partitions
 if [ -e ${TARGET_DIR}/etc/fstab ]; then

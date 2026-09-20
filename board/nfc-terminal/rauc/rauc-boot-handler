@@ -62,7 +62,8 @@ write_cmdline() {
     root=$(slot_to_root "$1") || exit 1
     echo "root=${root} ${CMDLINE_OPTS} rauc.slot=$1" > "$CMDLINE"
 
-    # Sync kernel, DTB, and overlays from new active rootfs to boot partition
+    # Sync kernel, DTB, overlays and config.txt from new active rootfs to
+    # boot partition so firmware config always matches the new slot
     local tmp_mount="/tmp/rauc-slot-mount"
     mkdir -p "$tmp_mount"
     if mount -o ro "$root" "$tmp_mount" 2>/dev/null; then
@@ -72,6 +73,10 @@ write_cmdline() {
             cp "$tmp_mount/boot/bcm2711-rpi-cm4.dtb" "${BOOT_MOUNT}/bcm2711-rpi-cm4.dtb"
             rm -rf "${BOOT_MOUNT}/overlays"
             cp -r "$tmp_mount/boot/overlays" "${BOOT_MOUNT}/overlays"
+        fi
+        if [ -f "$tmp_mount/boot/config.txt" ]; then
+            cp "$tmp_mount/boot/config.txt" "${BOOT_MOUNT}/config.txt.tmp"
+            mv "${BOOT_MOUNT}/config.txt.tmp" "${BOOT_MOUNT}/config.txt"
         fi
         umount "$tmp_mount"
     fi

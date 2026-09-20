@@ -25,6 +25,11 @@ CONFIG_I2C=y
 CONFIG_I2C_CHARDEV=y
 CONFIG_I2C_BCM2835=y
 CONFIG_I2C_BRCMSTB=y
+# i2c0 (GPIO0/1) is a mux channel on CM4; built-in so the LM3630A backlight
+# and touch controller can probe before the panel driver needs them.
+CONFIG_I2C_MUX=y
+CONFIG_I2C_MUX_PINCTRL=y
+CONFIG_REGMAP_I2C=y
 
 # Touchscreen Support (edt-ft5x06 supports FT6336U)
 CONFIG_INPUT_TOUCHSCREEN=y
@@ -39,11 +44,17 @@ CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_LOGO=y
 CONFIG_LOGO_LINUX_CLUT224=y
 
-# Disable WiFi and Bluetooth (not present on this CM4 variant)
-# CONFIG_WLAN is not set
+# WiFi: CM4 on-board CYW43455 (SDIO) via brcmfmac. Bluetooth stays off.
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_CFG80211=y
+CONFIG_CFG80211_WEXT=y
+CONFIG_MAC80211=y
+CONFIG_RFKILL=y
+CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC_SDIO=y
+CONFIG_BRCMUTIL=m
 # CONFIG_BT is not set
-# CONFIG_CFG80211 is not set
-# CONFIG_MAC80211 is not set
 
 # VirtIO/QEMU drivers removed for production (saves kernel size and init time)
 # CONFIG_VIRTIO is not set

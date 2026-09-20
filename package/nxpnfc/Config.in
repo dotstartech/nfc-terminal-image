@@ -1,0 +1,13 @@
+config BR2_PACKAGE_NXPNFC
+	bool "nxpnfc"
+	depends on BR2_LINUX_KERNEL
+	help
+	  NXP PN7160 NFC kernel I2C driver (official NXPNFCLinux/nxpnfc).
+	  Creates /dev/nxpnfc character device for the libnfc-nci NCI2.0
+	  userspace stack. Handles VEN/IRQ/DWL_REQ GPIO control via
+	  device tree configuration.
+
+	  https://github.com/NXPNFCLinux/nxpnfc
+
+comment "nxpnfc needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0
+// Device Tree Overlay for NXP PN7160 NFC on I2C1 with nxpnfc kernel driver
+// GPIO5 = Interrupt (IRQ)
+// GPIO6 = Enable (VEN)
+// GPIO7 = Firmware download request (DWL_REQ)
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2711";
+
+    // Configure GPIO pins for NFC
+    fragment@0 {
+        target = <&gpio>;
+        __overlay__ {
+            nfc_pins: nfc_pins {
+                brcm,pins = <5 6 7>;
+                brcm,function = <0 1 1>;  // 0=input (IRQ), 1=output (VEN, DWL_REQ)
+                brcm,pull = <2 0 1>;      // 2=pull-up on IRQ, 0=none on VEN,
+                                          // 1=pull-down on DWL_REQ (NCI mode)
+            };
+        };
+    };
+
+    // Add PN7160 to I2C1
+    fragment@1 {
+        target = <&i2c1>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            pn7160: nxpnfc@28 {
+                compatible = "nxp,nxpnfc";
+                reg = <0x28>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&nfc_pins>;
+                nxp,nxpnfc-irq = <&gpio 5 0>;      // GPIO5, active high
+                nxp,nxpnfc-ven = <&gpio 6 0>;      // GPIO6, active high
+                nxp,nxpnfc-fw-dwnld = <&gpio 7 0>; // GPIO7, active high
+                status = "okay";
+            };
+        };
+    };
+};

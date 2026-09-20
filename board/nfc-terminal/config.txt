@@ -26,7 +26,7 @@ dtoverlay=i2c-rtc,ds3231
 
 # PN7150 NFC on I2C1 with kernel driver
 # GPIO5 = NFC INT, GPIO6 = NFC ENABLE
-dtoverlay=nfc-pn7150
+dtoverlay=nfc-pn7160
 
 dtparam=audio=off
 
@@ -45,7 +45,7 @@ dtoverlay=disable-bt
 # ST7703 GX040HD Display Panel (720x720 MIPI DSI)
 display_auto_detect=0
 dtoverlay=vc4-kms-v3d
-dtoverlay=st7703-gx040hd
+dtoverlay=st7703-gx040hd-i2c
 
 # FT6336U Touch Controller on I2C0
 dtoverlay=ft6336u-gx040hd

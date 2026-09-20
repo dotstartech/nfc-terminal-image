@@ -1,0 +1,26 @@
+]633;E;cat <<'EOF'\x0aFrom: Alex Hoffmann <alex@dotstartech.com>\x0aDate: Thu, 20 Aug 2026 14:00:00 +0200\x0aSubject: [PATCH] Fix 32-bit truncation of std::string::find in Split\x0a\x0aThe vendored android::base::Split stores the result of\x0astd::string::find in an unsigned int. On 64-bit targets\x0astd::string::npos truncates to 0xFFFFFFFF which no longer equals npos,\x0aso the subsequent substr(index + 1) throws std::out_of_range and the\x0awhole stack aborts whenever a config file contains a byte-array value\x0a(e.g. NFA_PROPRIETARY_CFG={05:FF:...}).\x0a\x0aUse size_t as returned by find().\x0a\x0aSigned-off-by: Alex Hoffmann <alex@dotstartech.com>\x0a---\x0aEOF\x0a;036ef2ca-dd05-41f4-a356-9f1df2b58a24]633;CFrom: Alex Hoffmann <alex@dotstartech.com>
+Date: Thu, 20 Aug 2026 14:00:00 +0200
+Subject: [PATCH] Fix 32-bit truncation of std::string::find in Split
+
+The vendored android::base::Split stores the result of
+std::string::find in an unsigned int. On 64-bit targets
+std::string::npos truncates to 0xFFFFFFFF which no longer equals npos,
+so the subsequent substr(index + 1) throws std::out_of_range and the
+whole stack aborts whenever a config file contains a byte-array value
+(e.g. NFA_PROPRIETARY_CFG={05:FF:...}).
+
+Use size_t as returned by find().
+
+Signed-off-by: Alex Hoffmann <alex@dotstartech.com>
+---
+--- a/src/android/utility/base/strings.cpp
++++ b/src/android/utility/base/strings.cpp
+@@ -24,7 +24,7 @@
+ 	std::string str(s);
+ 	std::string  token(delimiters);
+ 	while (str.size()) {
+-		unsigned int index = str.find(token);
++		size_t index = str.find(token);
+ 		if (index != std::string::npos) {
+ 			result.push_back(str.substr(0, index));
+ 			str = str.substr(index + token.size());

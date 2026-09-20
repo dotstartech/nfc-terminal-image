@@ -1,4 +1,4 @@
-From: NFC Terminal Build System <build@nfc-terminal.local>
+]633;E;head -17 /home/alex/workspace/nfc-terminal-image/package/st7703-gx040hd/0001-increase-reset-timing.patch;8d267a0c-b764-460a-9e41-2c09e267ac97]633;CFrom: NFC Terminal Build System <build@nfc-terminal.local>
 Date: Sun, 9 Feb 2026 12:00:00 +0100
 Subject: [PATCH] panel-sitronix-st7703: Increase reset timing for hard reboot robustness
 
@@ -15,12 +15,13 @@ reset even when coming from a corrupted state:
 
 Signed-off-by: NFC Terminal Build System <build@nfc-terminal.local>
 ---
+---
  panel-sitronix-st7703-gx040hd.c | 11 +++++++++--
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 --- a/panel-sitronix-st7703-gx040hd.c
 +++ b/panel-sitronix-st7703-gx040hd.c
-@@ -425,10 +425,16 @@ static int st7703_prepare(struct drm_pan
+@@ -484,10 +484,16 @@
  		goto disable_vcc;
  	}
  
@@ -38,4 +39,4 @@ Signed-off-by: NFC Terminal Build System <build@nfc-terminal.local>
 +	msleep(250); /* 250ms post-reset delay (was 20ms) */
  
  	ctx->desc->init_sequence(&dsi_ctx);
- 	if (dsi_ctx.accum_err)
+ 

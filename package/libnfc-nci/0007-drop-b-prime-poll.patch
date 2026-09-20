@@ -1,0 +1,26 @@
+From: Alex Hoffmann <alex@dotstartech.com>
+Date: Thu, 20 Aug 2026 17:00:00 +0200
+Subject: [PATCH] Never include B-prime poll in RF_DISCOVER
+
+NCI_DISCOVERY_TYPE_POLL_B_PRIME (0x74) is hardcoded in nci_defs.h and
+the PN7160 rejects it with SYNTAX_ERROR, aborting the whole
+RF_DISCOVER_CMD so no tag discovery ever runs. B' is not used by this
+product; drop it from the discover parameter assembly.
+
+Signed-off-by: Alex Hoffmann <alex@dotstartech.com>
+---
+--- a/src/nxp_nci_hal_libnfc-nci/src/nfa/dm/nfa_dm_discover.cc
++++ b/src/nxp_nci_hal_libnfc-nci/src/nfa/dm/nfa_dm_discover.cc
+@@ -228,8 +228,10 @@
+     if (num_params >= max_params) return num_params;
+   }
+ 
+-  /* Check polling B' */
+-  if (dm_disc_mask & NFA_DM_DISC_MASK_P_B_PRIME) {
++  /* Check polling B' - disabled: PN7160 rejects discovery type 0x74
++   * (proprietary B' poll) with SYNTAX_ERROR, which aborts the whole
++   * RF_DISCOVER_CMD. B' (ISO14443B') is not used by this product. */
++  if (0 && (dm_disc_mask & NFA_DM_DISC_MASK_P_B_PRIME)) {
+     disc_params[num_params].type = NFC_DISCOVERY_TYPE_POLL_B_PRIME;
+     disc_params[num_params].frequency = p_nfa_dm_rf_disc_freq_cfg->pbp;
+     num_params++;

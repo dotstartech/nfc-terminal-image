@@ -1,0 +1,38 @@
+From: Alex Hoffmann <alex@dotstartech.com>
+Date: Thu, 20 Aug 2026 17:30:00 +0200
+Subject: [PATCH] Skip NFCEE AID and listen routing in reader mode
+
+On boards without an active secure element the T4T NFCEE AID
+registration and RoutingManager commit block on NFA_EE events that
+never arrive, delaying the queued RF_DISCOVER indefinitely. A
+reader-only terminal needs neither; skip both when reader mode is
+requested.
+
+Signed-off-by: Alex Hoffmann <alex@dotstartech.com>
+---
+--- a/src/nxp_nci_hal_nfc/nci/jni/NativeNfcManager.cpp
++++ b/src/nxp_nci_hal_nfc/nci/jni/NativeNfcManager.cpp
+@@ -1566,11 +1566,23 @@
+   }
+ 
+ #ifdef LINUX
++  /* Reader-only terminals need no T4T NFCEE AID nor listen routing.
++   * On PN7160 boards without an active secure element these EE/routing
++   * operations block on NFA_EE events that never arrive, so the queued
++   * RF_DISCOVER is delayed indefinitely and tag polling never starts. */
++  if (!reader_mode) {
+     if(!addT4TNfceeAid()) {
+       DLOG_IF(INFO, nfc_debug_enabled) << StringPrintf("%s: addT4TNfceeAid Failed", __func__);
+     }
++  }
+ #endif
+   // Check listen configuration
++#ifdef LINUX
++  if (reader_mode) {
++    DLOG_IF(INFO, nfc_debug_enabled)
++        << StringPrintf("%s: reader mode - skip listen routing", __func__);
++  } else
++#endif
+   if (enable_host_routing) {
+     RoutingManager::getInstance().enableRoutingToHost();
+     RoutingManager::getInstance().commitRouting();

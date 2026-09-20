@@ -146,8 +146,11 @@ case "${1:-build}" in
         ;;
 
     rebuild-kernel)
-        print_status "Rebuilding kernel only..."
+        print_status "Rebuilding kernel and out-of-tree modules..."
         make linux-rebuild
+        # OOT modules embed kernel symbol CRCs; a config change invalidates them
+        # ("disagrees about version of symbol") but Buildroot won't rebuild them.
+        make st7703-gx040hd-dirclean nxpnfc-dirclean pn5xx-i2c-dirclean
         make
         ;;
 
@@ -359,7 +362,7 @@ EOF
         echo "  build [--demo-app] - Build the complete image (default, without demo app)"
         echo "  clean           - Clean build artifacts"
         echo "  distclean       - Remove all build artifacts and configuration"
-        echo "  rebuild-kernel  - Rebuild only the kernel"
+        echo "  rebuild-kernel  - Rebuild the kernel and all out-of-tree modules"
         echo "  rebuild-driver  - Rebuild only the ST7703 display driver"
         echo "  rebuild-demoapp - Rebuild only the nfc-lvgl-app demo"
         echo "  savedefconfig   - Save current config to defconfig file"

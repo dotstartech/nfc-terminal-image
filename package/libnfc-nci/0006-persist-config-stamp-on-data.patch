@@ -1,0 +1,23 @@
+From: Alex Hoffmann <alex@dotstartech.com>
+Date: Thu, 20 Aug 2026 16:00:00 +0200
+Subject: [PATCH] Persist NXP config timestamp on /data
+
+The applied-configuration stamp lives in /var/tmp which is tmpfs on
+this image, so isNxpConfigModified() returns true on every boot and the
+HAL re-runs the full one-time config-apply pass (with several 1s
+command timeouts, adding tens of seconds to every NFC init). Store the
+stamp on the persistent /data partition instead.
+
+Signed-off-by: Alex Hoffmann <alex@dotstartech.com>
+---
+--- a/src/nfcandroid_nfc_hidlimpl/halimpl/utils/phNxpConfig.cpp
++++ b/src/nfcandroid_nfc_hidlimpl/halimpl/utils/phNxpConfig.cpp
+@@ -65,7 +65,7 @@
+ #define config_pn557      "pn557"
+ #define IsStringValue       0x80000000
+ 
+-const char config_timestamp_path[] = "/var/tmp/libnfc-nxp-stamp-h1";
++const char config_timestamp_path[] = "/data/libnfc-nxp-stamp-h1";
+ 
+ using namespace::std;
+ 

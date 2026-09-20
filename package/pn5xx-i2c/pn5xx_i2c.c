@@ -35,6 +35,7 @@
 #include <linux/gpio.h>
 #include <linux/miscdevice.h>
 #include <linux/spinlock.h>
+#include <linux/poll.h>
 #include "pn5xx_i2c.h"
 #include <linux/of_gpio.h>
 #include <linux/regulator/consumer.h>
@@ -384,6 +385,35 @@ static long  pn54x_dev_ioctl(struct file *filp, unsigned int cmd,
 	return 0;
 }
 
+/*
+ * poll support: report POLLIN when the NFCC has data (IRQ line high).
+ * Required by the NCI2.0 HAL (libnfc-nci) which select()s on the fd
+ * before every read; without poll support select() always reports
+ * readable and the HAL reads chip filler bytes (0xFF) as garbage.
+ */
+static unsigned int pn54x_dev_poll(struct file *filp, poll_table *wait)
+{
+	struct pn54x_dev *pn54x_dev = filp->private_data;
+	unsigned int mask = 0;
+	unsigned long flags;
+
+	poll_wait(filp, &pn54x_dev->read_wq, wait);
+
+	if (gpio_get_value(pn54x_dev->irq_gpio)) {
+		mask = POLLIN | POLLRDNORM;
+	} else {
+		/* Arm the interrupt so the waitqueue is woken on data */
+		spin_lock_irqsave(&pn54x_dev->irq_enabled_lock, flags);
+		if (!pn54x_dev->irq_enabled) {
+			pn54x_dev->irq_enabled = true;
+			enable_irq(pn54x_dev->client->irq);
+		}
+		spin_unlock_irqrestore(&pn54x_dev->irq_enabled_lock, flags);
+	}
+
+	return mask;
+}
+
 static const struct file_operations pn54x_dev_fops = {
 	.owner	= THIS_MODULE,
 	.llseek	= noop_llseek,
@@ -392,6 +422,7 @@ static const struct file_operations pn54x_dev_fops = {
 	.open	= pn54x_dev_open,
 	.release  = pn54x_dev_release,
 	.unlocked_ioctl  = pn54x_dev_ioctl,
+	.poll	= pn54x_dev_poll,
 };
 
 

@@ -1,0 +1,83 @@
+]633;E;cat <<'EOF'\x0aFrom: Alex Hoffmann <alex@dotstartech.com>\x0aDate: Thu, 20 Aug 2026 13:00:00 +0200\x0aSubject: [PATCH] Use /etc for config paths instead of //usr/local//etc\x0a\x0aThe Buildroot package installs libnfc-nci.conf and libnfc-nxp.conf to\x0a/etc (sysconfdir) but ConfigPathProvider hardcodes //usr/local//etc//,\x0aso the stack cannot find any configuration at runtime (FATAL: Check\x0afailed: config_path != ""). Point all paths at /etc and the NFA\x0astorage bin at /tmp/nfc.\x0a\x0aSigned-off-by: Alex Hoffmann <alex@dotstartech.com>\x0a---\x0aEOF\x0a;036ef2ca-dd05-41f4-a356-9f1df2b58a24]633;CFrom: Alex Hoffmann <alex@dotstartech.com>
+Date: Thu, 20 Aug 2026 13:00:00 +0200
+Subject: [PATCH] Use /etc for config paths instead of //usr/local//etc
+
+The Buildroot package installs libnfc-nci.conf and libnfc-nxp.conf to
+/etc (sysconfdir) but ConfigPathProvider hardcodes //usr/local//etc//,
+so the stack cannot find any configuration at runtime (FATAL: Check
+failed: config_path != ""). Point config files at /etc; put NFA storage
+and the config-state bins on /data so the applied-config timestamps
+survive OTA updates (otherwise every update re-runs the slow one-time
+config-apply pass with its per-command timeouts, ~40s).
+
+Signed-off-by: Alex Hoffmann <alex@dotstartech.com>
+---
+--- a/src/libnfc-utils/src/ConfigPathProvider.cc
++++ b/src/libnfc-utils/src/ConfigPathProvider.cc
+@@ -83,17 +83,17 @@
+         << StringPrintf("%s: enter FileType:0x%02x", __func__, type);
+     switch (type) {
+     case VENDOR_NFC_CONFIG: {
+-        string path = "//usr//local//etc//libnfc-nxp.conf";
++        string path = "/etc/libnfc-nxp.conf";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case VENDOR_ESE_CONFIG: {
+-        string path = "//usr//local//etc//libese-nxp.conf";
++        string path = "/etc/libese-nxp.conf";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case SYSTEM_CONFIG: {
+-        const vector<string> searchPath = { "//usr/local//etc//" };
++        const vector<string> searchPath = { "/etc/" };
+         for (string path : searchPath) {
+             addEnvPathIfAvailable(path);
+             path.append("libnfc-nci.conf");
+@@ -105,38 +105,38 @@
+         return "";
+     } break;
+     case RF_CONFIG: {
+-        string path = "//usr//local//etc//libnfc-nxp_RF.conf";
++        string path = "/etc/libnfc-nxp_RF.conf";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case TRANSIT_CONFIG: {
+-        string path = "//usr/local//etc//libnfc-nxpTransit.conf";
++        string path = "/etc/libnfc-nxpTransit.conf";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case NFASTORAGE_BIN: {
+-        string path = ".\\data\\nfc";
++        string path = "/data/nfc";
+         addEnvPathIfAvailable(path);
+         nfc_storage_path.assign(path);
+         return nfc_storage_path;
+     } break;
+     case FIRMWARE_LIB: {
+-        string path = "//usr/local//etc//libsn100u_fw.dll";
++        string path = "/etc/libsn100u_fw.dll";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case CONFIG_TIMESTAMP: {
+-        string path = "//usr//local//etc//libnfc-nxpConfigState.bin";
++        string path = "/data/libnfc-nxpConfigState.bin";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case RF_CONFIG_TIMESTAMP: {
+-        string path = "//usr//local//etc//libnfc-nxpRFConfigState.bin";
++        string path = "/data/libnfc-nxpRFConfigState.bin";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;
+     case TRANSIT_CONFIG_TIMESTAMP: {
+-        string path = "//usr//local//etc//libnfc-nxpTransitConfigState.bin";
++        string path = "/data/libnfc-nxpTransitConfigState.bin";
+         addEnvPathIfAvailable(path);
+         return path;
+     } break;

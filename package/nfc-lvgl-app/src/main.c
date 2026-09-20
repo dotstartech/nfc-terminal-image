@@ -1003,45 +1003,31 @@ static void *nfc_thread(void *arg) {
     /* Give the UI time to render first frame */
     sleep(2);
 
-    /* Retry NFC initialization with exponential backoff */
-    int retry_delay = 2;  /* Start with 2 seconds */
-    const int max_retry_delay = 30;  /* Cap at 30 seconds */
-    const int max_retries = 10;
-
-    for (int attempt = 1; attempt <= max_retries; attempt++) {
-        res = nfcManager_doInitialize();
-        if (res == 0) {
-            LOG("NFC: Initialized NFC (attempt %d)\n", attempt);
-            break;
-        }
-
-        LOG("NFC: Init failed (attempt %d/%d, rc=%d), retrying in %ds...\n",
-            attempt, max_retries, res, retry_delay);
-
-        if (attempt == max_retries) {
-            fprintf(stderr, "NFC init failed after %d attempts\n", max_retries);
-            fflush(stderr);
-            pthread_mutex_lock(&g_ui_mutex);
-            lv_label_set_text(g_status_label, "NFC Init Failed!\nCheck hardware.");
-            pthread_mutex_unlock(&g_ui_mutex);
-            atomic_store(&g_ui_needs_refresh, 1);
-            return NULL;
-        }
-
-        /* Wait with backoff, but check g_running so we can exit promptly */
-        for (int s = 0; s < retry_delay && g_running; s++) {
-            sleep(1);
-        }
-        if (!g_running) return NULL;
-
-        retry_delay = (retry_delay * 2 > max_retry_delay) ? max_retry_delay : retry_delay * 2;
+    /* Single attempt: a missing/dead NFC chip will not appear later, and
+     * re-calling nfcManager_doInitialize() after a failure crashes the
+     * stack (Finalize() runs GKI_shutdown()+delete on the live singleton). */
+    res = nfcManager_doInitialize();
+    if (res != 0) {
+        LOG("NFC: Init failed (rc=%d), running without NFC\n", res);
+        pthread_mutex_lock(&g_ui_mutex);
+        lv_label_set_text(g_status_label, "NFC not available");
+        pthread_mutex_unlock(&g_ui_mutex);
+        atomic_store(&g_ui_needs_refresh, 1);
+        return NULL;
     }
+    LOG("NFC: Initialized NFC\n");
 
     /*LOG("NFC: Registering callbacks...\n");*/
     nfcManager_registerTagCallback(&g_nfc_callbacks);
-    
-    /*LOG("NFC: Enabling discovery (reader_only=0)...\n");*/
-    nfcManager_enableDiscovery(DEFAULT_NFA_TECH_MASK, 0, 0, 0);
+
+    /* Passive poll A|B|F|ISO15693 only (0x0F). DEFAULT_NFA_TECH_MASK (-1)
+     * enables B-prime and legacy active modes whose NCI mappings the
+     * PN7160 rejects (RF_DISCOVER_CMD fails with SYNTAX_ERROR).
+     * reader_only_mode=0: the reader-mode path issues NFCC_CONFIG_CONTROL
+     * + 200ms discovery duration after which this PN7160 firmware
+     * (12.50.05) stops responding; the standard path (as used by NXP's
+     * nfcDemoApp) works reliably. */
+    nfcManager_enableDiscovery(0x0F, 0, 0, 0);
     
     LOG("NFC: Enabled NFC discovery\n");
 

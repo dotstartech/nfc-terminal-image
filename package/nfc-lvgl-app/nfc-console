@@ -3,7 +3,7 @@
 # NFC Console - runs nfc-lvgl-app on the display (tty1)
 #
 
-NFC_DEV="/dev/pn544"
+NFC_DEV="/dev/nxpnfc"
 
 # Wait for NFC device to appear (max 30 seconds per attempt, with retry)
 while :; do
